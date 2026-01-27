@@ -1,0 +1,150 @@
+{
+  "name": "Evolution WhatsApp - Enviar Mensagens",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger-manual",
+      "name": "Trigger Manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "instance_name",
+              "value": "minha-instancia"
+            },
+            {
+              "name": "numero_destino",
+              "value": "5511999999999"
+            },
+            {
+              "name": "mensagem",
+              "value": "Olá! Esta é uma mensagem de teste do Hub de Automação."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-dados",
+      "name": "Definir Dados",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://evolution:8080/message/sendText/{{ $json.instance_name }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.numero_destino }}\",\n  \"text\": \"{{ $json.mensagem }}\"\n}",
+        "options": {}
+      },
+      "id": "enviar-texto",
+      "name": "Enviar Texto WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "1",
+          "name": "Evolution API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://evolution:8080/message/sendMedia/{{ $json.instance_name }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.numero_destino }}\",\n  \"mediatype\": \"image\",\n  \"mimetype\": \"image/png\",\n  \"caption\": \"Imagem enviada pelo Hub\",\n  \"media\": \"https://exemplo.com/imagem.png\"\n}",
+        "options": {}
+      },
+      "id": "enviar-imagem",
+      "name": "Enviar Imagem WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "1",
+          "name": "Evolution API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://evolution:8080/message/sendMedia/{{ $json.instance_name }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.numero_destino }}\",\n  \"mediatype\": \"document\",\n  \"mimetype\": \"application/pdf\",\n  \"caption\": \"Documento enviado pelo Hub\",\n  \"media\": \"https://exemplo.com/arquivo.pdf\",\n  \"fileName\": \"documento.pdf\"\n}",
+        "options": {}
+      },
+      "id": "enviar-documento",
+      "name": "Enviar Documento WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 600],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "1",
+          "name": "Evolution API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Trigger Manual": {
+      "main": [
+        [
+          {
+            "node": "Definir Dados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Definir Dados": {
+      "main": [
+        [
+          {
+            "node": "Enviar Texto WhatsApp",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Enviar Imagem WhatsApp",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Enviar Documento WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}

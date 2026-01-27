@@ -1,0 +1,18 @@
+# Ambiente
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

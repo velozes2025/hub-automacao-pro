@@ -1,0 +1,53 @@
+version: '3.8'
+
+# ============================================
+# EXTENSÃO: Túneis para Internet
+# ============================================
+# Uso: docker-compose -f docker-compose.yml -f docker-compose.tunnel.yml up -d
+# ============================================
+
+services:
+  # ============================================
+  # Ngrok - Túnel para n8n
+  # ============================================
+  ngrok-n8n:
+    image: ngrok/ngrok:latest
+    container_name: hub-ngrok-n8n
+    restart: unless-stopped
+    command:
+      - "http"
+      - "n8n:5678"
+      - "--log=stdout"
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
+    ports:
+      - "4040:4040"  # Dashboard do Ngrok
+    networks:
+      - hub-network
+    depends_on:
+      - n8n
+
+  # ============================================
+  # Ngrok - Túnel para Evolution
+  # ============================================
+  ngrok-evolution:
+    image: ngrok/ngrok:latest
+    container_name: hub-ngrok-evolution
+    restart: unless-stopped
+    command:
+      - "http"
+      - "evolution:8080"
+      - "--log=stdout"
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
+    ports:
+      - "4041:4040"  # Dashboard do Ngrok (porta diferente)
+    networks:
+      - hub-network
+    depends_on:
+      - evolution
+
+networks:
+  hub-network:
+    external: true
+    name: hub-automacao-network

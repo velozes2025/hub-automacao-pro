@@ -1,0 +1,60 @@
+╔══════════════════════════════════════════════════════════════╗
+║           HUB AUTOMAÇÃO PRO - RESUMO DA INSTALAÇÃO           ║
+╚══════════════════════════════════════════════════════════════╝
+
+✅ SERVIÇOS RODANDO:
+   • PostgreSQL (banco de dados)
+   • Redis (cache)
+   • n8n (automação) - http://localhost:5678
+   • Evolution API (WhatsApp) - http://localhost:8080
+
+✅ TÚNEL ATIVO:
+   • URL pública: https://sonia-foliaged-womanishly.ngrok-free.dev
+
+✅ CHAVES CONFIGURADAS:
+   • Evolution API Key: ✓
+   • Anthropic API Key: ✓
+
+✅ BANCO DE DADOS:
+   • Tabela 'empresas': ✓
+   • Tabela 'logs_consumo': ✓
+   • Empresa teste cadastrada: ✓
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⏳ FALTA FAZER (quando tiver número):
+   1. Importar workflow no n8n
+   2. Conectar WhatsApp
+   3. Configurar webhook
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 COMANDOS ÚTEIS:
+
+   # Ver status dos containers
+   cd ~/hub-automacao-pro && docker compose ps
+
+   # Iniciar tudo
+   cd ~/hub-automacao-pro && docker compose up -d
+
+   # Parar tudo
+   cd ~/hub-automacao-pro && docker compose down
+
+   # Ver logs
+   cd ~/hub-automacao-pro && docker compose logs -f
+
+   # Iniciar túnel Ngrok
+   cd ~/hub-automacao-pro && ./tunnel/start-ngrok.sh
+
+   # Conectar WhatsApp (quando tiver número)
+   cd ~/hub-automacao-pro && ./CONECTAR-WHATSAPP.sh
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📁 ARQUIVOS IMPORTANTES:
+   • .env - Chaves e senhas
+   • docker-compose.yml - Configuração dos serviços
+   • n8n-workflows/ - Workflows para importar
+   • scripts/ - Scripts de gerenciamento
+   • tunnel/ - Scripts de túnel
+
