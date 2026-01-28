@@ -83,48 +83,37 @@ services:
   # Evolution API - WhatsApp API
   # ============================================
   evolution:
-    image: atendai/evolution-api:latest
+    image: atendai/evolution-api:v1.8.2
     container_name: hub-evolution
     restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
-      # Configuracoes do Servidor
-      - SERVER_URL=${EVOLUTION_SERVER_URL:-http://localhost:8080}
-      - SERVER_PORT=8080
-
       # Autenticacao
+      - AUTHENTICATION_TYPE=apikey
       - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-sua-chave-global-aqui}
       - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
 
-      # Banco de Dados
-      - DATABASE_ENABLED=true
-      - DATABASE_PROVIDER=postgresql
-      - DATABASE_CONNECTION_URI=postgresql://${POSTGRES_USER:-hub_user}:${POSTGRES_PASSWORD:-hub_secret_2024}@postgres:5432/${POSTGRES_DB:-hub_database}?schema=evolution
-      - DATABASE_SAVE_DATA_INSTANCE=true
-      - DATABASE_SAVE_DATA_NEW_MESSAGE=true
-      - DATABASE_SAVE_MESSAGE_UPDATE=true
-      - DATABASE_SAVE_DATA_CONTACTS=true
-      - DATABASE_SAVE_DATA_CHATS=true
+      # Armazenamento (usando arquivos locais na v1.x)
+      - STORE_MESSAGES=true
+      - STORE_MESSAGE_UP=true
+      - STORE_CONTACTS=true
+      - STORE_CHATS=true
 
-      # Redis
-      - CACHE_REDIS_ENABLED=true
-      - CACHE_REDIS_URI=redis://redis:6379
-      - CACHE_REDIS_PREFIX_KEY=evolution
-      - CACHE_LOCAL_ENABLED=false
+      # Redis para cache
+      - REDIS_ENABLED=true
+      - REDIS_URI=redis://redis:6379
 
       # Logs
-      - LOG_LEVEL=ERROR
+      - LOG_LEVEL=DEBUG
       - LOG_COLOR=true
 
       # Instancias
       - DEL_INSTANCE=false
-      - DEL_TEMP_INSTANCES=true
 
       # Webhook Global
       - WEBHOOK_GLOBAL_ENABLED=false
       - WEBHOOK_GLOBAL_URL=${WEBHOOK_GLOBAL_URL:-}
-      - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=false
 
       # QR Code
       - QRCODE_LIMIT=30
@@ -142,10 +131,27 @@ services:
     networks:
       - hub-network
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
+
+  # ============================================
+  # Eva Bot - Script Python Direto
+  # ============================================
+  eva-bot:
+    build: ./bot
+    container_name: hub-eva-bot
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-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}
+      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY:-c5dd0eb4d0a4780a2816dcfb37c68020}
+      - EVOLUTION_URL=http://evolution:8080
+      - INSTANCE_NAME=eva_bot
+    networks:
+      - hub-network
+    depends_on:
+      - evolution
 
 # ============================================
 # Volumes Persistentes
