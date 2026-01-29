@@ -144,7 +144,7 @@ def mark_lid_resolved(lid_jid, instance_name):
 
 # --- Pending LID responses ---
 
-def ensure_pending_table():
+def ensure_tables():
     _query(
         """CREATE TABLE IF NOT EXISTS pending_lid_responses (
                id SERIAL PRIMARY KEY,
@@ -155,6 +155,28 @@ def ensure_pending_table():
                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                delivered BOOLEAN DEFAULT false
            )""",
+        fetch=False
+    )
+    _query(
+        """CREATE TABLE IF NOT EXISTS leads (
+               id SERIAL PRIMARY KEY,
+               empresa_id TEXT NOT NULL,
+               phone TEXT NOT NULL,
+               lid TEXT DEFAULT '',
+               push_name TEXT DEFAULT '',
+               origin TEXT DEFAULT 'whatsapp',
+               first_message TEXT DEFAULT '',
+               detected_language TEXT DEFAULT 'pt',
+               status TEXT DEFAULT 'novo',
+               instance_name TEXT DEFAULT '',
+               created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+               updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+           )""",
+        fetch=False
+    )
+    _query(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_phone_empresa
+           ON leads (phone, empresa_id)""",
         fetch=False
     )
 
@@ -186,6 +208,44 @@ def mark_responses_delivered(ids):
     _query(
         "UPDATE pending_lid_responses SET delivered = true WHERE id = ANY(%s)",
         (ids,),
+        fetch=False
+    )
+
+
+# --- Leads ---
+
+def upsert_lead(empresa_id, phone, push_name='', lid='', origin='whatsapp',
+                first_message='', detected_language='pt', instance_name=''):
+    """Cria ou atualiza lead. Nunca perde um contato novo."""
+    _query(
+        """INSERT INTO leads
+               (empresa_id, phone, push_name, lid, origin, first_message,
+                detected_language, instance_name)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+           ON CONFLICT (phone, empresa_id) DO UPDATE SET
+               push_name = COALESCE(NULLIF(EXCLUDED.push_name, ''), leads.push_name),
+               lid = COALESCE(NULLIF(EXCLUDED.lid, ''), leads.lid),
+               detected_language = EXCLUDED.detected_language,
+               updated_at = CURRENT_TIMESTAMP""",
+        (empresa_id, phone, push_name, lid, origin, first_message,
+         detected_language, instance_name),
+        fetch=False
+    )
+
+
+def get_lead(empresa_id, phone):
+    rows = _query(
+        "SELECT * FROM leads WHERE empresa_id = %s AND phone = %s LIMIT 1",
+        (empresa_id, phone)
+    )
+    return dict(rows[0]) if rows else None
+
+
+def update_lead_status(empresa_id, phone, status):
+    _query(
+        """UPDATE leads SET status = %s, updated_at = CURRENT_TIMESTAMP
+           WHERE empresa_id = %s AND phone = %s""",
+        (status, empresa_id, phone),
         fetch=False
     )
 

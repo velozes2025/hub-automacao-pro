@@ -1,9 +1,13 @@
 """
 Hub Automacao Pro - Bot Multi-Cliente
 Webhook unico que atende todas as instancias WhatsApp.
-Resolucao automatica de LID com 7 estrategias + fila de pendentes.
+- Resolucao automatica de LID com 7 estrategias + fila de pendentes
+- Auto-save de todo lead novo no banco
+- Deteccao de idioma automatica
+- Garantia de resposta: nenhum cliente fica sem resposta
 """
 import json
+import re
 import time
 import threading
 import logging
@@ -18,6 +22,12 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('hub-bot')
 
+PENDING_MAX_AGE_SECONDS = 600  # 10 minutos
+
+
+# ============================================================
+# UTILS
+# ============================================================
 
 def get_phone_from_message(data):
     """Extrai telefone do payload da Evolution API v2."""
@@ -45,6 +55,24 @@ def get_text_from_message(data):
         msg.get('conversation')
         or msg.get('extendedTextMessage', {}).get('text')
     )
+
+
+def detect_language(text):
+    """Detecta idioma do texto por heuristica simples."""
+    t = text.lower()
+    # Ingles
+    en_words = r'\b(hi|hello|hey|how|what|where|when|why|can|could|would|should|the|is|are|do|does|have|has|yes|no|please|thanks|thank|you|your|need|help|want|looking|business|company)\b'
+    en_count = len(re.findall(en_words, t))
+    # Espanhol
+    es_words = r'\b(hola|como|estas|donde|cuando|porque|puedo|quiero|necesito|gracias|bueno|bien|empresa|negocio|ayuda|por favor|tengo|tiene|hacer|estoy)\b'
+    es_count = len(re.findall(es_words, t))
+    # Portugues
+    pt_words = r'\b(oi|ola|tudo|bem|como|voce|onde|quando|porque|preciso|quero|obrigado|bom|empresa|ajuda|por favor|tenho|tem|fazer|estou|nao|sim)\b'
+    pt_count = len(re.findall(pt_words, t))
+
+    scores = {'en': en_count, 'es': es_count, 'pt': pt_count}
+    best = max(scores, key=scores.get)
+    return best if scores[best] > 0 else 'pt'
 
 
 def is_within_business_hours(empresa):
@@ -92,7 +120,6 @@ def process_contacts_event(payload):
                 db.mark_lid_resolved(lid, instance_name)
                 log.info(f'[CONTACTS EVENT] Mapeamento direto: {lid} -> {phone}')
 
-                # Deliver pending responses
                 _deliver_pending_responses(instance_name, lid, phone)
 
     except Exception as e:
@@ -100,18 +127,15 @@ def process_contacts_event(payload):
 
 
 # ============================================================
-# PENDING RESPONSE DELIVERY
+# PENDING RESPONSE DELIVERY (max 2 msgs, consolidacao, janela)
 # ============================================================
-
-PENDING_MAX_AGE_SECONDS = 600  # 10 minutos
-
 
 def _deliver_pending_responses(instance_name, lid_jid, phone):
     """Deliver pending responses with consolidation and time-window rules.
 
-    - Se pendentes > 10 min: manda msg unica de retomada.
-    - Se pendentes <= 10 min e multiplas: condensa em 1-2 msgs.
-    - Se pendente unica <= 10 min: manda normal.
+    - Pendentes > 10 min: 1 msg de retomada (descarta conteudo antigo).
+    - Pendentes <= 10 min, 1 msg: envia normal.
+    - Pendentes <= 10 min, 2+ msgs: max 2 msgs (atraso + continuacao).
     """
     try:
         pending = db.get_pending_responses(lid_jid, instance_name)
@@ -124,7 +148,7 @@ def _deliver_pending_responses(instance_name, lid_jid, phone):
         nome = push_name.split()[0] if push_name else ''
 
         if oldest_age > PENDING_MAX_AGE_SECONDS:
-            # Mensagens antigas: manda retomada em vez do conteudo original
+            # Mensagens antigas (>10 min): msg unica de retomada
             if nome:
                 msg = f'Oi {nome}! Tive um atraso tecnico aqui, desculpa. Ja estou de volta, como posso te ajudar?'
             else:
@@ -132,49 +156,39 @@ def _deliver_pending_responses(instance_name, lid_jid, phone):
 
             evolution.set_typing(instance_name, phone, True)
             time.sleep(2.5)
-            sent = evolution.send_message(instance_name, phone, msg)
+            evolution.send_message(instance_name, phone, msg)
             evolution.set_typing(instance_name, phone, False)
 
-            if sent:
-                log.info(f'[PENDING] Retomada enviada para {phone} ({len(pending)} msgs antigas descartadas)')
+            log.info(f'[PENDING] Retomada enviada para {phone} ({len(pending)} msgs antigas descartadas)')
             db.mark_responses_delivered(all_ids)
             return
 
-        # Mensagens recentes (< 10 min)
+        # Mensagens recentes (<= 10 min)
         if len(pending) == 1:
-            # Uma unica pendente: envia normal
             evolution.set_typing(instance_name, phone, True)
             time.sleep(2.0)
             evolution.send_message(instance_name, phone, pending[0]['response_text'])
             evolution.set_typing(instance_name, phone, False)
-            log.info(f'[PENDING] Entregue 1 resposta pendente para {phone}')
-            db.mark_responses_delivered(all_ids)
-            return
-
-        # Multiplas pendentes recentes: condensar em 1-2 mensagens
-        texts = [p['response_text'] for p in pending]
-        if len(texts) <= 2:
-            # 2 pendentes: manda as duas com intervalo
-            for t in texts:
-                evolution.set_typing(instance_name, phone, True)
-                time.sleep(2.0)
-                evolution.send_message(instance_name, phone, t)
-                evolution.set_typing(instance_name, phone, False)
+            log.info(f'[PENDING] Entregue 1 resposta para {phone}')
         else:
-            # 3+ pendentes: condensar tudo em uma unica mensagem resumo
-            combined = '\n'.join(texts)
-            # Se o resumo ficar muito grande, pega so a ultima resposta
-            if len(combined) > 500:
-                final_msg = texts[-1]
-            else:
-                final_msg = combined
-
+            # 2+ pendentes: max 2 msgs (explicacao + ultima resposta)
             evolution.set_typing(instance_name, phone, True)
-            time.sleep(3.0)
-            evolution.send_message(instance_name, phone, final_msg)
+            time.sleep(2.0)
+            if nome:
+                evolution.send_message(instance_name, phone,
+                    f'{nome}, desculpa o atraso tecnico! Ja normalizou.')
+            else:
+                evolution.send_message(instance_name, phone,
+                    'Desculpa o atraso tecnico! Ja normalizou.')
             evolution.set_typing(instance_name, phone, False)
 
-        log.info(f'[PENDING] Consolidou {len(pending)} respostas para {phone}')
+            time.sleep(1.5)
+            evolution.set_typing(instance_name, phone, True)
+            time.sleep(2.0)
+            evolution.send_message(instance_name, phone, pending[-1]['response_text'])
+            evolution.set_typing(instance_name, phone, False)
+            log.info(f'[PENDING] Consolidou {len(pending)} respostas em 2 msgs para {phone}')
+
         db.mark_responses_delivered(all_ids)
 
     except Exception as e:
@@ -231,7 +245,6 @@ def _learn_from_sent(instance_name, data):
         pic = sent_contact.get('profilePicUrl')
         pn = sent_contact.get('pushName', '') or push_name
 
-        # Match by profilePicUrl (base path comparison)
         if pic:
             for c in contacts:
                 rjid = c.get('remoteJid', '')
@@ -243,7 +256,6 @@ def _learn_from_sent(instance_name, data):
                     _deliver_pending_responses(instance_name, rjid, phone)
                     break
 
-        # Match by pushName
         if pn:
             lid_candidates = [
                 c for c in contacts
@@ -264,7 +276,10 @@ def _learn_from_sent(instance_name, data):
 
 
 def process_message(payload):
-    """Processa mensagem em background thread."""
+    """Processa mensagem em background thread.
+
+    REGRA: Nenhum cliente fica sem resposta. Nenhum lead novo deixa de ser salvo.
+    """
     try:
         event = payload.get('event', '')
 
@@ -291,7 +306,10 @@ def process_message(payload):
         if not phone:
             return
 
-        # Resolver LID para numero real
+        push_name = data.get('pushName', '')
+        lang = detect_language(text)
+
+        # --- Resolver LID ---
         send_phone = phone
         is_lid = '@lid' in phone
         lid_unresolved = False
@@ -305,35 +323,53 @@ def process_message(payload):
                 log.warning(f'[{instance_name}] LID nao resolvido: {phone} - processando como pendente')
                 db.save_unresolved_lid(
                     phone, instance_name,
-                    data.get('pushName', ''),
+                    push_name,
                     json.dumps(data.get('key', {}))
                 )
 
-        push_name = data.get('pushName', '')
-
-        # Buscar config da empresa
+        # --- Buscar empresa ---
         empresa = db.get_empresa_by_instance(instance_name)
         if not empresa:
             log.warning(f'Instancia desconhecida ou inativa: {instance_name}')
             return
 
         empresa_id = str(empresa['id'])
+        db_phone = send_phone if not lid_unresolved else phone
 
-        # Verificar horario de atendimento
+        # ==========================================================
+        # LEAD AUTO-SAVE: todo contato novo vai pro banco SEMPRE
+        # ==========================================================
+        try:
+            db.upsert_lead(
+                empresa_id=empresa_id,
+                phone=db_phone,
+                push_name=push_name,
+                lid=phone if is_lid else '',
+                origin='whatsapp',
+                first_message=text[:500],
+                detected_language=lang,
+                instance_name=instance_name
+            )
+        except Exception as e:
+            # Erro no banco NAO impede resposta
+            log.error(f'Erro ao salvar lead: {e}')
+
+        # --- Horario de atendimento ---
         if not is_within_business_hours(empresa):
             msg_fora = empresa.get('outside_hours_message')
-            if msg_fora and not lid_unresolved:
-                evolution.send_message(instance_name, send_phone, msg_fora)
+            if msg_fora:
+                if lid_unresolved:
+                    db.save_pending_response(phone, instance_name, msg_fora, push_name)
+                else:
+                    evolution.send_message(instance_name, send_phone, msg_fora)
             return
 
-        # Ativar "digitando..." imediatamente (se temos o telefone real)
+        # --- Digitando ---
         can_send = not lid_unresolved
         if can_send:
             evolution.set_typing(instance_name, send_phone, True)
 
-        db_phone = send_phone if not lid_unresolved else phone
-
-        # Carregar historico
+        # --- Historico ---
         max_history = empresa.get('max_history_messages', 10)
         history = db.get_conversation_history(empresa_id, db_phone, max_history)
 
@@ -341,7 +377,13 @@ def process_message(payload):
         db.save_message(empresa_id, db_phone, 'user', text, push_name)
         history.append({'role': 'user', 'content': text})
 
-        # Montar system prompt com contexto do contato
+        # Atualizar status do lead para em_andamento
+        try:
+            db.update_lead_status(empresa_id, db_phone, 'em_andamento')
+        except Exception:
+            pass
+
+        # --- System prompt + contexto ---
         base_prompt = empresa.get('system_prompt', '')
         contact_info = db.get_contact_info(empresa_id, db_phone)
 
@@ -350,6 +392,7 @@ def process_message(payload):
             total = contact_info['total_msgs']
             ctx = (
                 f'\n\nCONTEXTO: Falando com {nome}. Ja trocaram {total} msgs. '
+                f'Idioma detectado: {lang}. '
                 f'NAO se apresente de novo. Continue a conversa naturalmente. '
                 f'Chame pelo nome. Seja proativo, sugira, pergunte.'
             )
@@ -357,16 +400,17 @@ def process_message(payload):
             nome = push_name or ''
             ctx = (
                 f'\n\nCONTEXTO: Primeiro contato{" com " + nome if nome else ""}. '
+                f'Idioma detectado: {lang}. RESPONDA NESSE IDIOMA. '
                 f'Se apresente: Oliver, quantrexnow.io. '
                 f'Pergunte o ramo do negocio e como pode ajudar. So nesta primeira vez.'
             )
 
-        # Chamar Claude
+        # --- Chamar Claude ---
         result = claude_client.call_claude(
             system_prompt=base_prompt + ctx,
             messages=history,
             model=empresa.get('model', 'claude-opus-4-5-20251101'),
-            max_tokens=empresa.get('max_tokens', 200)
+            max_tokens=empresa.get('max_tokens', 120)
         )
 
         response_text = result['text']
@@ -383,6 +427,7 @@ def process_message(payload):
             result['cost']
         )
 
+        # --- ENVIO ---
         if lid_unresolved:
             # LID nao resolvido: salvar resposta como pendente
             db.save_pending_response(phone, instance_name, response_text, push_name)
@@ -396,12 +441,12 @@ def process_message(payload):
                 _deliver_pending_responses(instance_name, phone, resolved_late)
             return
 
-        # Delay proporcional ao tamanho da resposta (simula digitacao real)
+        # Delay proporcional (simula digitacao real ~40 chars/seg)
         typing_secs = max(2.0, min(len(response_text) / 40.0, 8.0))
         evolution.set_typing(instance_name, send_phone, True)
         time.sleep(typing_secs)
 
-        # Parar digitacao e enviar
+        # Enviar
         evolution.set_typing(instance_name, send_phone, False)
         sent = evolution.send_message(instance_name, send_phone, response_text)
 
@@ -413,6 +458,10 @@ def process_message(payload):
     except Exception as e:
         log.error(f'Erro ao processar mensagem: {e}', exc_info=True)
 
+
+# ============================================================
+# ROUTES
+# ============================================================
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -435,11 +484,26 @@ def unresolved_lids():
     return jsonify(lids), 200
 
 
+@app.route('/api/leads', methods=['GET'])
+def list_leads():
+    """Lista todos os leads salvos."""
+    rows = db._query(
+        """SELECT id, empresa_id, phone, push_name, origin, first_message,
+                  detected_language, status, instance_name, created_at, updated_at
+           FROM leads ORDER BY created_at DESC LIMIT 100"""
+    )
+    return jsonify([dict(r) for r in rows] if rows else []), 200
+
+
+# ============================================================
+# STARTUP
+# ============================================================
+
 if __name__ == '__main__':
     log.info('Hub Bot multi-cliente iniciando...')
     db.init_pool()
-    db.ensure_pending_table()
-    log.info('Pool PostgreSQL conectado')
+    db.ensure_tables()
+    log.info('Pool PostgreSQL conectado + tabelas verificadas')
 
     # Iniciar background resolver
     resolver_thread = threading.Thread(target=_background_lid_resolver, daemon=True)
