@@ -103,28 +103,80 @@ def process_contacts_event(payload):
 # PENDING RESPONSE DELIVERY
 # ============================================================
 
+PENDING_MAX_AGE_SECONDS = 600  # 10 minutos
+
+
 def _deliver_pending_responses(instance_name, lid_jid, phone):
-    """Deliver any pending responses for a newly resolved LID."""
+    """Deliver pending responses with consolidation and time-window rules.
+
+    - Se pendentes > 10 min: manda msg unica de retomada.
+    - Se pendentes <= 10 min e multiplas: condensa em 1-2 msgs.
+    - Se pendente unica <= 10 min: manda normal.
+    """
     try:
         pending = db.get_pending_responses(lid_jid, instance_name)
         if not pending:
             return
 
-        delivered_ids = []
-        for p in pending:
-            # Show typing before sending
+        all_ids = [p['id'] for p in pending]
+        oldest_age = max(float(p.get('age_seconds', 0)) for p in pending)
+        push_name = pending[0].get('push_name', '') or ''
+        nome = push_name.split()[0] if push_name else ''
+
+        if oldest_age > PENDING_MAX_AGE_SECONDS:
+            # Mensagens antigas: manda retomada em vez do conteudo original
+            if nome:
+                msg = f'Oi {nome}! Tive um atraso tecnico aqui, desculpa. Ja estou de volta, como posso te ajudar?'
+            else:
+                msg = 'Oi! Desculpa a demora, tive um problema tecnico. Ja to de volta, no que posso ajudar?'
+
+            evolution.set_typing(instance_name, phone, True)
+            time.sleep(2.5)
+            sent = evolution.send_message(instance_name, phone, msg)
+            evolution.set_typing(instance_name, phone, False)
+
+            if sent:
+                log.info(f'[PENDING] Retomada enviada para {phone} ({len(pending)} msgs antigas descartadas)')
+            db.mark_responses_delivered(all_ids)
+            return
+
+        # Mensagens recentes (< 10 min)
+        if len(pending) == 1:
+            # Uma unica pendente: envia normal
             evolution.set_typing(instance_name, phone, True)
             time.sleep(2.0)
-            sent = evolution.send_message(instance_name, phone, p['response_text'])
+            evolution.send_message(instance_name, phone, pending[0]['response_text'])
             evolution.set_typing(instance_name, phone, False)
-            if sent:
-                delivered_ids.append(p['id'])
-                log.info(f'[PENDING] Entregue resposta pendente para {phone} (LID: {lid_jid})')
-            else:
-                log.error(f'[PENDING] Falha ao entregar para {phone}')
+            log.info(f'[PENDING] Entregue 1 resposta pendente para {phone}')
+            db.mark_responses_delivered(all_ids)
+            return
 
-        if delivered_ids:
-            db.mark_responses_delivered(delivered_ids)
+        # Multiplas pendentes recentes: condensar em 1-2 mensagens
+        texts = [p['response_text'] for p in pending]
+        if len(texts) <= 2:
+            # 2 pendentes: manda as duas com intervalo
+            for t in texts:
+                evolution.set_typing(instance_name, phone, True)
+                time.sleep(2.0)
+                evolution.send_message(instance_name, phone, t)
+                evolution.set_typing(instance_name, phone, False)
+        else:
+            # 3+ pendentes: condensar tudo em uma unica mensagem resumo
+            combined = '\n'.join(texts)
+            # Se o resumo ficar muito grande, pega so a ultima resposta
+            if len(combined) > 500:
+                final_msg = texts[-1]
+            else:
+                final_msg = combined
+
+            evolution.set_typing(instance_name, phone, True)
+            time.sleep(3.0)
+            evolution.send_message(instance_name, phone, final_msg)
+            evolution.set_typing(instance_name, phone, False)
+
+        log.info(f'[PENDING] Consolidou {len(pending)} respostas para {phone}')
+        db.mark_responses_delivered(all_ids)
+
     except Exception as e:
         log.error(f'Erro entregando respostas pendentes: {e}')
 

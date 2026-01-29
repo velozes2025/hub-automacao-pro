@@ -170,7 +170,9 @@ def save_pending_response(lid_jid, instance_name, response_text, push_name=''):
 
 def get_pending_responses(lid_jid, instance_name):
     rows = _query(
-        """SELECT id, response_text FROM pending_lid_responses
+        """SELECT id, response_text, push_name, created_at,
+                  EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) as age_seconds
+           FROM pending_lid_responses
            WHERE lid = %s AND instance_name = %s AND delivered = false
            ORDER BY created_at ASC""",
         (lid_jid, instance_name)
