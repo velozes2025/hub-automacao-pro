@@ -1,10 +1,85 @@
+import logging
 import requests
 from config import EVOLUTION_URL, EVOLUTION_API_KEY
+
+log = logging.getLogger('evolution')
 
 _HEADERS = {
     'apikey': EVOLUTION_API_KEY or '',
     'Content-Type': 'application/json'
 }
+
+# In-memory cache: LID JID -> resolved phone number
+_lid_cache = {}
+
+
+def resolve_lid_to_phone(instance_name, lid_jid):
+    """Resolve a LID JID to a real phone number using Evolution contacts API.
+
+    WhatsApp uses LID (Linked ID) format for some contacts. The Evolution API
+    cannot send messages to LID addresses directly, so we resolve them by
+    matching profilePicUrl between the LID contact and @s.whatsapp.net contacts.
+    """
+    if lid_jid in _lid_cache:
+        return _lid_cache[lid_jid]
+
+    try:
+        # Get all contacts for this instance
+        r = requests.post(
+            f'{EVOLUTION_URL}/chat/findContacts/{instance_name}',
+            headers=_HEADERS,
+            json={},
+            timeout=10
+        )
+        if r.status_code != 200:
+            log.warning(f'findContacts falhou ({r.status_code})')
+            return None
+
+        contacts = r.json()
+        if not isinstance(contacts, list):
+            return None
+
+        # Find the LID contact
+        lid_contact = None
+        for c in contacts:
+            if c.get('remoteJid') == lid_jid:
+                lid_contact = c
+                break
+
+        if not lid_contact:
+            return None
+
+        pic_url = lid_contact.get('profilePicUrl')
+        push_name = lid_contact.get('pushName', '')
+
+        # Strategy 1: Match by profilePicUrl (most reliable)
+        if pic_url:
+            for c in contacts:
+                rjid = c.get('remoteJid', '')
+                if rjid.endswith('@s.whatsapp.net') and c.get('profilePicUrl') == pic_url:
+                    phone = rjid.split('@')[0]
+                    _lid_cache[lid_jid] = phone
+                    log.info(f'LID resolvido via profilePic: {lid_jid} -> {phone}')
+                    return phone
+
+        # Strategy 2: Match by pushName (less reliable, only if unique match)
+        if push_name:
+            candidates = [
+                c for c in contacts
+                if c.get('remoteJid', '').endswith('@s.whatsapp.net')
+                and c.get('pushName') == push_name
+            ]
+            if len(candidates) == 1:
+                phone = candidates[0]['remoteJid'].split('@')[0]
+                _lid_cache[lid_jid] = phone
+                log.info(f'LID resolvido via pushName: {lid_jid} -> {phone}')
+                return phone
+
+        log.warning(f'Nao foi possivel resolver LID: {lid_jid}')
+        return None
+    except Exception as e:
+        log.error(f'Erro ao resolver LID: {e}')
+        return None
 
 
 def set_typing(instance_name, phone, typing=True):
@@ -27,17 +102,22 @@ def send_message(instance_name, phone, text):
             json={'number': phone, 'text': text},
             timeout=10
         )
-        if r.status_code == 200:
+        if r.status_code in (200, 201):
             return True
-        # fallback: formato alternativo
+        log.warning(f'Envio falhou ({r.status_code}): {r.text[:200]}')
+        # fallback: formato alternativo (textMessage wrapper)
         r = requests.post(
             f'{EVOLUTION_URL}/message/sendText/{instance_name}',
             headers=_HEADERS,
             json={'number': phone, 'textMessage': {'text': text}},
             timeout=10
         )
-        return r.status_code == 200
-    except Exception:
+        if r.status_code in (200, 201):
+            return True
+        log.error(f'Envio fallback falhou ({r.status_code}): {r.text[:200]}')
+        return False
+    except Exception as e:
+        log.error(f'Erro envio: {e}')
         return False
 
 

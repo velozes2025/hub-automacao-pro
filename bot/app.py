@@ -18,12 +18,25 @@ log = logging.getLogger('hub-bot')
 
 
 def get_phone_from_message(data):
-    """Extrai telefone do payload da Evolution API v2."""
+    """Extrai telefone do payload da Evolution API v2.
+    Tenta remoteJid primeiro; se for LID, usa participant ou pushName lookup.
+    """
     remote_jid = data.get('key', {}).get('remoteJid', '')
+
+    # Formato normal: 5511999999999@s.whatsapp.net
     if '@s.whatsapp.net' in remote_jid:
         return remote_jid.split('@')[0]
+
+    # Formato LID: precisa do remoteJid completo para envio
     if '@lid' in remote_jid:
+        # Tenta participant como alternativa (tem numero real em grupos)
+        participant = data.get('key', {}).get('participant', '')
+        if participant and '@s.whatsapp.net' in participant:
+            return participant.split('@')[0]
+        # Retorna o remoteJid completo para usar no envio
         return remote_jid
+
+    # Fallback: participant
     participant = data.get('key', {}).get('participant', '')
     if participant:
         return participant.split('@')[0]
@@ -72,6 +85,15 @@ def process_message(payload):
         if not phone:
             return
 
+        # Resolver LID para numero real (WhatsApp usa LID internamente)
+        send_phone = phone
+        if '@lid' in phone:
+            resolved = evolution.resolve_lid_to_phone(instance_name, phone)
+            if resolved:
+                send_phone = resolved
+            else:
+                log.warning(f'[{instance_name}] LID nao resolvido: {phone}')
+
         push_name = data.get('pushName', '')
 
         # Buscar config da empresa
@@ -86,26 +108,29 @@ def process_message(payload):
         if not is_within_business_hours(empresa):
             msg_fora = empresa.get('outside_hours_message')
             if msg_fora:
-                evolution.send_message(instance_name, phone, msg_fora)
+                evolution.send_message(instance_name, send_phone, msg_fora)
             return
 
         # Indicador de digitacao
-        evolution.set_typing(instance_name, phone, True)
+        evolution.set_typing(instance_name, send_phone, True)
         time.sleep(empresa.get('typing_delay_ms', 800) / 1000)
+
+        # Usar send_phone para DB tambem (consistencia de historico)
+        db_phone = send_phone
 
         # Carregar historico
         max_history = empresa.get('max_history_messages', 10)
-        history = db.get_conversation_history(empresa_id, phone, max_history)
+        history = db.get_conversation_history(empresa_id, db_phone, max_history)
 
         # Mensagem de boas-vindas na primeira interacao
         greeting = empresa.get('greeting_message')
         if greeting and len(history) == 0:
-            evolution.send_message(instance_name, phone, greeting)
-            db.save_message(empresa_id, phone, 'assistant', greeting)
+            evolution.send_message(instance_name, send_phone, greeting)
+            db.save_message(empresa_id, db_phone, 'assistant', greeting)
             time.sleep(0.5)
 
         # Salvar mensagem do usuario
-        db.save_message(empresa_id, phone, 'user', text, push_name)
+        db.save_message(empresa_id, db_phone, 'user', text, push_name)
         history.append({'role': 'user', 'content': text})
 
         # Chamar Claude
@@ -119,7 +144,7 @@ def process_message(payload):
         response_text = result['text']
 
         # Salvar resposta
-        db.save_message(empresa_id, phone, 'assistant', response_text)
+        db.save_message(empresa_id, db_phone, 'assistant', response_text)
 
         # Registrar consumo
         db.log_token_usage(
@@ -131,10 +156,13 @@ def process_message(payload):
         )
 
         # Parar digitacao e enviar
-        evolution.set_typing(instance_name, phone, False)
-        evolution.send_message(instance_name, phone, response_text)
+        evolution.set_typing(instance_name, send_phone, False)
+        sent = evolution.send_message(instance_name, send_phone, response_text)
 
-        log.info(f'[{instance_name}] {phone}: "{text[:40]}" -> "{response_text[:40]}"')
+        if sent:
+            log.info(f'[{instance_name}] {send_phone}: "{text[:40]}" -> "{response_text[:40]}"')
+        else:
+            log.error(f'[{instance_name}] FALHA ENVIO para {send_phone}. Resposta: "{response_text[:40]}"')
 
     except Exception as e:
         log.error(f'Erro ao processar mensagem: {e}', exc_info=True)

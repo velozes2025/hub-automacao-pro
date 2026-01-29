@@ -59,7 +59,7 @@ def login():
         user = db.get_admin_user(request.form.get('username', ''))
         if user and check_password_hash(user['password_hash'], request.form.get('password', '')):
             session['admin'] = user['username']
-            return redirect(url_for('dashboard'))
+            return redirect(url_for('dashboard'), code=303)
         flash('Usuario ou senha incorretos', 'error')
     return render_template('login.html')
 

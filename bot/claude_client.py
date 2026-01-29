@@ -6,6 +6,7 @@ PRICING = {
     'claude-3-5-haiku-20241022': {'input': 0.0000008, 'output': 0.000004},
     'claude-3-5-sonnet-20241022': {'input': 0.000003, 'output': 0.000015},
     'claude-sonnet-4-20250514': {'input': 0.000003, 'output': 0.000015},
+    'claude-opus-4-5-20251101': {'input': 0.000015, 'output': 0.000075},
 }
 
 FALLBACK_RESPONSES = [
