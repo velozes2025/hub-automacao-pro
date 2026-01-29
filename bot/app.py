@@ -1,6 +1,7 @@
 """
 Hub Automacao Pro - Bot Multi-Cliente
 Webhook unico que atende todas as instancias WhatsApp.
+Resolucao automatica de LID com 7 estrategias + fila de pendentes.
 """
 import json
 import time
@@ -16,9 +17,6 @@ import claude_client
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('hub-bot')
-
-# Fila de mensagens pendentes por LID nao resolvido
-_pending_lid = {}
 
 
 def get_phone_from_message(data):
@@ -61,50 +59,168 @@ def is_within_business_hours(empresa):
     return now >= start or now <= end
 
 
-def try_resolve_lid_from_sent(instance_name, lid_jid):
-    """Tenta resolver LID checando mensagens enviadas (fromMe) que contém o JID real."""
-    try:
-        # Quando o bot envia uma mensagem manual para um numero real,
-        # a Evolution API cria um contato @s.whatsapp.net.
-        # Na proxima vez que o LID mandar mensagem, a resolucao via contacts funciona.
-        # Aqui tentamos forcar a atualizacao dos contatos.
-        r = evolution.fetch_all_contacts(instance_name)
-        if not r:
-            return None
+# ============================================================
+# CONTACTS EVENT HANDLER - Auto-learn LID-to-phone mappings
+# ============================================================
 
-        # Procura por contato com mesmo profilePicUrl ou pushName
-        lid_contact = None
-        for c in r:
-            if c.get('remoteJid') == lid_jid:
-                lid_contact = c
+def process_contacts_event(payload):
+    """Handle contacts.upsert/update events to learn LID-phone mappings."""
+    try:
+        instance_name = payload.get('instance', '')
+        data = payload.get('data', {})
+
+        contacts = data if isinstance(data, list) else [data]
+
+        for contact in contacts:
+            if not isinstance(contact, dict):
+                continue
+
+            contact_id = contact.get('id', '') or contact.get('remoteJid', '')
+            lid = contact.get('lid', '')
+            push_name = (
+                contact.get('name')
+                or contact.get('notify', '')
+                or contact.get('pushName', '')
+            )
+
+            # Direct mapping if both phone JID and LID are present
+            if (contact_id and '@s.whatsapp.net' in contact_id
+                    and lid and '@lid' in lid):
+                phone = contact_id.split('@')[0]
+                db.save_lid_phone(lid, phone, instance_name, push_name)
+                evolution._lid_cache[lid] = phone
+                db.mark_lid_resolved(lid, instance_name)
+                log.info(f'[CONTACTS EVENT] Mapeamento direto: {lid} -> {phone}')
+
+                # Deliver pending responses
+                _deliver_pending_responses(instance_name, lid, phone)
+
+    except Exception as e:
+        log.error(f'Erro processando contacts event: {e}', exc_info=True)
+
+
+# ============================================================
+# PENDING RESPONSE DELIVERY
+# ============================================================
+
+def _deliver_pending_responses(instance_name, lid_jid, phone):
+    """Deliver any pending responses for a newly resolved LID."""
+    try:
+        pending = db.get_pending_responses(lid_jid, instance_name)
+        if not pending:
+            return
+
+        delivered_ids = []
+        for p in pending:
+            # Show typing before sending
+            evolution.set_typing(instance_name, phone, True)
+            time.sleep(2.0)
+            sent = evolution.send_message(instance_name, phone, p['response_text'])
+            evolution.set_typing(instance_name, phone, False)
+            if sent:
+                delivered_ids.append(p['id'])
+                log.info(f'[PENDING] Entregue resposta pendente para {phone} (LID: {lid_jid})')
+            else:
+                log.error(f'[PENDING] Falha ao entregar para {phone}')
+
+        if delivered_ids:
+            db.mark_responses_delivered(delivered_ids)
+    except Exception as e:
+        log.error(f'Erro entregando respostas pendentes: {e}')
+
+
+# ============================================================
+# BACKGROUND LID RESOLVER
+# ============================================================
+
+def _background_lid_resolver():
+    """Background thread that periodically retries resolving unresolved LIDs."""
+    while True:
+        try:
+            time.sleep(30)
+            unresolved = db.get_unresolved_lids()
+            for entry in unresolved:
+                lid = entry['lid']
+                inst = entry['instance_name']
+                phone = evolution.resolve_lid_to_phone(inst, lid)
+                if phone:
+                    log.info(f'[BG-RESOLVER] Resolveu {lid} -> {phone}')
+                    _deliver_pending_responses(inst, lid, phone)
+        except Exception as e:
+            log.error(f'[BG-RESOLVER] Erro: {e}')
+
+
+# ============================================================
+# MESSAGE PROCESSING
+# ============================================================
+
+def _learn_from_sent(instance_name, data):
+    """Aprende mapeamento LID->phone quando uma mensagem e enviada."""
+    try:
+        remote_jid = data.get('key', {}).get('remoteJid', '')
+        if '@s.whatsapp.net' not in remote_jid:
+            return
+        phone = remote_jid.split('@')[0]
+        push_name = data.get('pushName', '')
+
+        contacts = evolution.fetch_all_contacts(instance_name)
+        if not contacts:
+            return
+
+        sent_contact = None
+        for c in contacts:
+            if c.get('remoteJid') == remote_jid:
+                sent_contact = c
                 break
 
-        if not lid_contact:
-            return None
+        if not sent_contact:
+            return
 
-        pic = lid_contact.get('profilePicUrl')
-        pn = lid_contact.get('pushName', '')
+        pic = sent_contact.get('profilePicUrl')
+        pn = sent_contact.get('pushName', '') or push_name
 
+        # Match by profilePicUrl (base path comparison)
         if pic:
-            for c in r:
+            for c in contacts:
                 rjid = c.get('remoteJid', '')
-                if rjid.endswith('@s.whatsapp.net') and c.get('profilePicUrl') == pic:
-                    return rjid.split('@')[0]
+                if '@lid' in rjid and evolution._same_profile_pic(c.get('profilePicUrl'), pic):
+                    db.save_lid_phone(rjid, phone, instance_name, pn or c.get('pushName', ''))
+                    evolution._lid_cache[rjid] = phone
+                    db.mark_lid_resolved(rjid, instance_name)
+                    log.info(f'Aprendeu mapeamento via envio: {rjid} -> {phone}')
+                    _deliver_pending_responses(instance_name, rjid, phone)
+                    break
 
+        # Match by pushName
         if pn:
-            matches = [c for c in r if c.get('remoteJid', '').endswith('@s.whatsapp.net') and c.get('pushName') == pn]
-            if len(matches) == 1:
-                return matches[0]['remoteJid'].split('@')[0]
+            lid_candidates = [
+                c for c in contacts
+                if '@lid' in c.get('remoteJid', '')
+                and c.get('pushName') == pn
+            ]
+            if len(lid_candidates) == 1:
+                rjid = lid_candidates[0]['remoteJid']
+                if rjid not in evolution._lid_cache:
+                    db.save_lid_phone(rjid, phone, instance_name, pn)
+                    evolution._lid_cache[rjid] = phone
+                    db.mark_lid_resolved(rjid, instance_name)
+                    log.info(f'Aprendeu mapeamento via pushName envio: {rjid} -> {phone}')
+                    _deliver_pending_responses(instance_name, rjid, phone)
 
-        return None
     except Exception:
-        return None
+        pass
 
 
 def process_message(payload):
     """Processa mensagem em background thread."""
     try:
         event = payload.get('event', '')
+
+        # Route contacts events
+        if event in ('contacts.upsert', 'contacts.update'):
+            process_contacts_event(payload)
+            return
+
         if event != 'messages.upsert':
             return
 
@@ -112,8 +228,6 @@ def process_message(payload):
         data = payload.get('data', {})
 
         if data.get('key', {}).get('fromMe', False):
-            # Quando o bot envia uma mensagem (manual ou automatica),
-            # captura o mapeamento LID <-> phone se possivel
             _learn_from_sent(instance_name, data)
             return
 
@@ -128,13 +242,15 @@ def process_message(payload):
         # Resolver LID para numero real
         send_phone = phone
         is_lid = '@lid' in phone
+        lid_unresolved = False
+
         if is_lid:
             resolved = evolution.resolve_lid_to_phone(instance_name, phone)
             if resolved:
                 send_phone = resolved
             else:
-                log.warning(f'[{instance_name}] LID nao resolvido: {phone} - salvando payload')
-                # Salvar LID pendente para resolucao futura
+                lid_unresolved = True
+                log.warning(f'[{instance_name}] LID nao resolvido: {phone} - processando como pendente')
                 db.save_unresolved_lid(
                     phone, instance_name,
                     data.get('pushName', ''),
@@ -154,16 +270,16 @@ def process_message(payload):
         # Verificar horario de atendimento
         if not is_within_business_hours(empresa):
             msg_fora = empresa.get('outside_hours_message')
-            if msg_fora and not is_lid:
+            if msg_fora and not lid_unresolved:
                 evolution.send_message(instance_name, send_phone, msg_fora)
             return
 
-        # Ativar "digitando..." imediatamente
-        can_send = send_phone != phone or not is_lid
+        # Ativar "digitando..." imediatamente (se temos o telefone real)
+        can_send = not lid_unresolved
         if can_send:
             evolution.set_typing(instance_name, send_phone, True)
 
-        db_phone = send_phone
+        db_phone = send_phone if not lid_unresolved else phone
 
         # Carregar historico
         max_history = empresa.get('max_history_messages', 10)
@@ -193,7 +309,7 @@ def process_message(payload):
                 f'Pergunte o ramo do negocio e como pode ajudar. So nesta primeira vez.'
             )
 
-        # Chamar Claude (digitando continua aparecendo enquanto processa)
+        # Chamar Claude
         result = claude_client.call_claude(
             system_prompt=base_prompt + ctx,
             messages=history,
@@ -202,14 +318,6 @@ def process_message(payload):
         )
 
         response_text = result['text']
-
-        # Delay proporcional ao tamanho da resposta (simula digitacao real)
-        # Pessoa real digita ~40 chars/seg no WhatsApp
-        if can_send:
-            typing_secs = max(2.0, min(len(response_text) / 40.0, 8.0))
-            # Reenviar "digitando" pra manter o indicador ativo
-            evolution.set_typing(instance_name, send_phone, True)
-            time.sleep(typing_secs)
 
         # Salvar resposta
         db.save_message(empresa_id, db_phone, 'assistant', response_text)
@@ -223,6 +331,24 @@ def process_message(payload):
             result['cost']
         )
 
+        if lid_unresolved:
+            # LID nao resolvido: salvar resposta como pendente
+            db.save_pending_response(phone, instance_name, response_text, push_name)
+            log.info(f'[{instance_name}] Resposta PENDENTE para LID {phone}: "{response_text[:40]}"')
+
+            # Tentar resolver uma ultima vez (contacts podem ter atualizado)
+            time.sleep(2)
+            resolved_late = evolution.resolve_lid_to_phone(instance_name, phone)
+            if resolved_late:
+                log.info(f'[{instance_name}] LID resolvido tardiamente: {phone} -> {resolved_late}')
+                _deliver_pending_responses(instance_name, phone, resolved_late)
+            return
+
+        # Delay proporcional ao tamanho da resposta (simula digitacao real)
+        typing_secs = max(2.0, min(len(response_text) / 40.0, 8.0))
+        evolution.set_typing(instance_name, send_phone, True)
+        time.sleep(typing_secs)
+
         # Parar digitacao e enviar
         evolution.set_typing(instance_name, send_phone, False)
         sent = evolution.send_message(instance_name, send_phone, response_text)
@@ -234,46 +360,6 @@ def process_message(payload):
 
     except Exception as e:
         log.error(f'Erro ao processar mensagem: {e}', exc_info=True)
-
-
-def _learn_from_sent(instance_name, data):
-    """Aprende mapeamento LID->phone quando uma mensagem e enviada."""
-    try:
-        remote_jid = data.get('key', {}).get('remoteJid', '')
-        if '@s.whatsapp.net' not in remote_jid:
-            return
-        phone = remote_jid.split('@')[0]
-        push_name = data.get('pushName', '')
-
-        # Tenta encontrar LID correspondente nos contatos
-        contacts = evolution.fetch_all_contacts(instance_name)
-        if not contacts:
-            return
-
-        # Encontra o contato @s.whatsapp.net
-        sent_contact = None
-        for c in contacts:
-            if c.get('remoteJid') == remote_jid:
-                sent_contact = c
-                break
-
-        if not sent_contact:
-            return
-
-        pic = sent_contact.get('profilePicUrl')
-        if not pic:
-            return
-
-        # Encontra LID com mesma foto
-        for c in contacts:
-            rjid = c.get('remoteJid', '')
-            if '@lid' in rjid and c.get('profilePicUrl') == pic:
-                db.save_lid_phone(rjid, phone, instance_name, push_name or c.get('pushName', ''))
-                evolution._lid_cache[rjid] = phone
-                log.info(f'Aprendeu mapeamento: {rjid} -> {phone}')
-                break
-    except Exception:
-        pass
 
 
 @app.route('/webhook', methods=['POST'])
@@ -300,5 +386,12 @@ def unresolved_lids():
 if __name__ == '__main__':
     log.info('Hub Bot multi-cliente iniciando...')
     db.init_pool()
+    db.ensure_pending_table()
     log.info('Pool PostgreSQL conectado')
+
+    # Iniciar background resolver
+    resolver_thread = threading.Thread(target=_background_lid_resolver, daemon=True)
+    resolver_thread.start()
+    log.info('Background LID resolver iniciado')
+
     app.run(host='0.0.0.0', port=3000)

@@ -131,3 +131,162 @@ def get_unresolved_lids():
            ORDER BY last_seen DESC LIMIT 50"""
     )
     return [dict(r) for r in rows] if rows else []
+
+
+def mark_lid_resolved(lid_jid, instance_name):
+    _query(
+        """UPDATE unresolved_lids SET resolved = true
+           WHERE lid = %s AND instance_name = %s""",
+        (lid_jid, instance_name),
+        fetch=False
+    )
+
+
+# --- Pending LID responses ---
+
+def ensure_pending_table():
+    _query(
+        """CREATE TABLE IF NOT EXISTS pending_lid_responses (
+               id SERIAL PRIMARY KEY,
+               lid TEXT NOT NULL,
+               instance_name TEXT NOT NULL,
+               response_text TEXT NOT NULL,
+               push_name TEXT DEFAULT '',
+               created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+               delivered BOOLEAN DEFAULT false
+           )""",
+        fetch=False
+    )
+
+
+def save_pending_response(lid_jid, instance_name, response_text, push_name=''):
+    _query(
+        """INSERT INTO pending_lid_responses (lid, instance_name, response_text, push_name)
+           VALUES (%s, %s, %s, %s)""",
+        (lid_jid, instance_name, response_text, push_name),
+        fetch=False
+    )
+
+
+def get_pending_responses(lid_jid, instance_name):
+    rows = _query(
+        """SELECT id, response_text FROM pending_lid_responses
+           WHERE lid = %s AND instance_name = %s AND delivered = false
+           ORDER BY created_at ASC""",
+        (lid_jid, instance_name)
+    )
+    return [dict(r) for r in rows] if rows else []
+
+
+def mark_responses_delivered(ids):
+    if not ids:
+        return
+    _query(
+        "UPDATE pending_lid_responses SET delivered = true WHERE id = ANY(%s)",
+        (ids,),
+        fetch=False
+    )
+
+
+# --- Evolution Internal DB Queries ---
+
+def resolve_lid_via_evolution_db(lid_jid):
+    """Query Evolution internal Contact table to resolve LID via profilePicUrl or pushName."""
+    try:
+        lid_rows = _query(
+            """SELECT "remoteJid", "pushName", "profilePicUrl"
+               FROM evolution."Contact"
+               WHERE "remoteJid" = %s LIMIT 1""",
+            (lid_jid,)
+        )
+        if not lid_rows:
+            return None
+
+        lid_contact = lid_rows[0]
+        pic_url = lid_contact.get('profilePicUrl')
+        push_name = lid_contact.get('pushName', '')
+
+        # Match by profilePicUrl (base path only, ignore query params)
+        if pic_url:
+            base_pic = pic_url.split('?')[0]
+            phone_rows = _query(
+                """SELECT "remoteJid" FROM evolution."Contact"
+                   WHERE SPLIT_PART("profilePicUrl", '?', 1) = %s
+                   AND "remoteJid" LIKE '%%@s.whatsapp.net'
+                   LIMIT 1""",
+                (base_pic,)
+            )
+            if phone_rows:
+                return phone_rows[0]['remoteJid'].split('@')[0]
+
+        # Match by pushName (unique only)
+        if push_name:
+            phone_rows = _query(
+                """SELECT "remoteJid" FROM evolution."Contact"
+                   WHERE "pushName" = %s
+                   AND "remoteJid" LIKE '%%@s.whatsapp.net'""",
+                (push_name,)
+            )
+            if phone_rows and len(phone_rows) == 1:
+                return phone_rows[0]['remoteJid'].split('@')[0]
+
+        return None
+    except Exception:
+        return None
+
+
+def resolve_lid_via_message_correlation(lid_jid):
+    """Match LID to phone via sent/received message timestamp correlation in Evolution DB."""
+    try:
+        rows = _query(
+            """WITH lid_times AS (
+                   SELECT MIN("messageTimestamp") as first_ts,
+                          MAX("messageTimestamp") as last_ts
+                   FROM evolution."Message"
+                   WHERE key->>'remoteJid' = %s
+                     AND key->>'fromMe' = 'false'
+               )
+               SELECT DISTINCT key->>'remoteJid' as phone_jid
+               FROM evolution."Message", lid_times
+               WHERE key->>'fromMe' = 'true'
+                 AND key->>'remoteJid' LIKE '%%@s.whatsapp.net'
+                 AND "messageTimestamp" BETWEEN lid_times.first_ts - 600
+                     AND lid_times.last_ts + 600""",
+            (lid_jid,)
+        )
+        if rows and len(rows) == 1:
+            return rows[0]['phone_jid'].split('@')[0]
+        return None
+    except Exception:
+        return None
+
+
+def resolve_lid_via_isonwhatsapp_elimination(lid_jid):
+    """Last resort: find unmapped phones in IsOnWhatsapp. If only one, it's the match."""
+    try:
+        all_phones_rows = _query(
+            """SELECT "remoteJid" FROM evolution."IsOnWhatsapp"
+               WHERE "remoteJid" LIKE '%%@s.whatsapp.net'"""
+        )
+        if not all_phones_rows:
+            return None
+
+        all_phones = {r['remoteJid'].split('@')[0] for r in all_phones_rows}
+
+        mapped_rows = _query("SELECT DISTINCT phone FROM lid_phone_map")
+        mapped_phones = {r['phone'] for r in mapped_rows} if mapped_rows else set()
+
+        # Also exclude phones that appear as contacts with @s.whatsapp.net
+        # (they are already known and would have been matched by other strategies)
+        known_rows = _query(
+            """SELECT "remoteJid" FROM evolution."Contact"
+               WHERE "remoteJid" LIKE '%%@s.whatsapp.net'"""
+        )
+        known_phones = {r['remoteJid'].split('@')[0] for r in known_rows} if known_rows else set()
+
+        unmapped = all_phones - mapped_phones - known_phones
+        if len(unmapped) == 1:
+            return unmapped.pop()
+        return None
+    except Exception:
+        return None

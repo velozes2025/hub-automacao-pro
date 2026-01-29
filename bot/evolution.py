@@ -13,10 +13,28 @@ _HEADERS = {
 _lid_cache = {}
 
 
+def _same_profile_pic(url1, url2):
+    """Compare profile pic URLs ignoring query parameters."""
+    if not url1 or not url2:
+        return False
+    return url1.split('?')[0] == url2.split('?')[0]
+
+
+def _save_and_cache(lid_jid, phone, instance_name, push_name, source):
+    """Save a resolved LID mapping to cache and DB."""
+    import db as _db
+    _lid_cache[lid_jid] = phone
+    _db.save_lid_phone(lid_jid, phone, instance_name, push_name)
+    _db.mark_lid_resolved(lid_jid, instance_name)
+    log.info(f'LID resolvido via {source}: {lid_jid} -> {phone}')
+
+
 def resolve_lid_to_phone(instance_name, lid_jid):
     """Resolve a LID JID to a real phone number.
 
-    Order: 1) memory cache, 2) DB mapping, 3) contacts profilePicUrl, 4) contacts pushName.
+    Order: 1) memory cache, 2) DB mapping, 3) contacts API profilePicUrl,
+    4) contacts API pushName, 5) Evolution internal DB Contact,
+    6) message correlation, 7) IsOnWhatsapp elimination.
     Auto-saves resolved mappings to DB for future use.
     """
     import db as _db
@@ -34,7 +52,8 @@ def resolve_lid_to_phone(instance_name, lid_jid):
     except Exception:
         pass
 
-    # Strategy 2+3: Contacts API
+    # Strategy 2+3: Contacts API (profilePicUrl + pushName)
+    push_name = ''
     try:
         r = requests.post(
             f'{EVOLUTION_URL}/chat/findContacts/{instance_name}',
@@ -42,56 +61,71 @@ def resolve_lid_to_phone(instance_name, lid_jid):
             json={},
             timeout=10
         )
-        if r.status_code != 200:
-            log.warning(f'findContacts falhou ({r.status_code})')
-            return None
+        if r.status_code == 200:
+            contacts = r.json()
+            if isinstance(contacts, list):
+                lid_contact = None
+                for c in contacts:
+                    if c.get('remoteJid') == lid_jid:
+                        lid_contact = c
+                        break
 
-        contacts = r.json()
-        if not isinstance(contacts, list):
-            return None
+                if lid_contact:
+                    pic_url = lid_contact.get('profilePicUrl')
+                    push_name = lid_contact.get('pushName', '')
 
-        lid_contact = None
-        for c in contacts:
-            if c.get('remoteJid') == lid_jid:
-                lid_contact = c
-                break
+                    # Strategy 2: Match by profilePicUrl (base path)
+                    if pic_url:
+                        for c in contacts:
+                            rjid = c.get('remoteJid', '')
+                            if rjid.endswith('@s.whatsapp.net') and _same_profile_pic(c.get('profilePicUrl'), pic_url):
+                                phone = rjid.split('@')[0]
+                                _save_and_cache(lid_jid, phone, instance_name, push_name, 'profilePic API')
+                                return phone
 
-        if not lid_contact:
-            return None
+                    # Strategy 3: Match by pushName (unique match only)
+                    if push_name:
+                        candidates = [
+                            c for c in contacts
+                            if c.get('remoteJid', '').endswith('@s.whatsapp.net')
+                            and c.get('pushName') == push_name
+                        ]
+                        if len(candidates) == 1:
+                            phone = candidates[0]['remoteJid'].split('@')[0]
+                            _save_and_cache(lid_jid, phone, instance_name, push_name, 'pushName API')
+                            return phone
+    except Exception:
+        pass
 
-        pic_url = lid_contact.get('profilePicUrl')
-        push_name = lid_contact.get('pushName', '')
+    # Strategy 4+5: Evolution internal DB (Contact table - profilePicUrl + pushName)
+    try:
+        phone = _db.resolve_lid_via_evolution_db(lid_jid)
+        if phone:
+            _save_and_cache(lid_jid, phone, instance_name, push_name, 'Evolution DB Contact')
+            return phone
+    except Exception:
+        pass
 
-        # Strategy 2: Match by profilePicUrl
-        if pic_url:
-            for c in contacts:
-                rjid = c.get('remoteJid', '')
-                if rjid.endswith('@s.whatsapp.net') and c.get('profilePicUrl') == pic_url:
-                    phone = rjid.split('@')[0]
-                    _lid_cache[lid_jid] = phone
-                    _db.save_lid_phone(lid_jid, phone, instance_name, push_name)
-                    log.info(f'LID resolvido via profilePic: {lid_jid} -> {phone}')
-                    return phone
+    # Strategy 6: Message timestamp correlation
+    try:
+        phone = _db.resolve_lid_via_message_correlation(lid_jid)
+        if phone:
+            _save_and_cache(lid_jid, phone, instance_name, push_name, 'msg correlation')
+            return phone
+    except Exception:
+        pass
 
-        # Strategy 3: Match by pushName (unique match only)
-        if push_name:
-            candidates = [
-                c for c in contacts
-                if c.get('remoteJid', '').endswith('@s.whatsapp.net')
-                and c.get('pushName') == push_name
-            ]
-            if len(candidates) == 1:
-                phone = candidates[0]['remoteJid'].split('@')[0]
-                _lid_cache[lid_jid] = phone
-                _db.save_lid_phone(lid_jid, phone, instance_name, push_name)
-                log.info(f'LID resolvido via pushName: {lid_jid} -> {phone}')
-                return phone
+    # Strategy 7: IsOnWhatsapp elimination (last resort)
+    try:
+        phone = _db.resolve_lid_via_isonwhatsapp_elimination(lid_jid)
+        if phone:
+            _save_and_cache(lid_jid, phone, instance_name, push_name, 'IsOnWhatsapp elimination')
+            return phone
+    except Exception:
+        pass
 
-        log.warning(f'LID nao resolvido: {lid_jid} (push={push_name})')
-        return None
-    except Exception as e:
-        log.error(f'Erro ao resolver LID: {e}')
-        return None
+    log.warning(f'LID nao resolvido (7 estrategias): {lid_jid} (push={push_name})')
+    return None
 
 
 def fetch_all_contacts(instance_name):
@@ -234,7 +268,7 @@ def set_webhook(instance_name, webhook_url):
                     'enabled': True,
                     'url': webhook_url,
                     'webhookByEvents': True,
-                    'events': ['MESSAGES_UPSERT']
+                    'events': ['MESSAGES_UPSERT', 'CONTACTS_UPSERT', 'CONTACTS_UPDATE']
                 }
             },
             timeout=10
