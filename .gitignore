@@ -3,6 +3,12 @@
 .env.local
 .env.*.local
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
 # Logs
 *.log
 logs/
@@ -16,3 +22,6 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Imagens temporarias
+*.png
