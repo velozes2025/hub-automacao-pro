@@ -108,3 +108,26 @@ def save_lid_phone(lid_jid, phone, instance_name, push_name=None):
         (lid_jid, phone, instance_name, push_name),
         fetch=False
     )
+
+
+def save_unresolved_lid(lid_jid, instance_name, push_name='', payload_key=''):
+    _query(
+        """INSERT INTO unresolved_lids (lid, instance_name, push_name, payload_key)
+           VALUES (%s, %s, %s, %s)
+           ON CONFLICT (lid, instance_name) DO UPDATE SET
+               push_name = EXCLUDED.push_name,
+               attempts = unresolved_lids.attempts + 1,
+               last_seen = CURRENT_TIMESTAMP""",
+        (lid_jid, instance_name, push_name, payload_key),
+        fetch=False
+    )
+
+
+def get_unresolved_lids():
+    rows = _query(
+        """SELECT lid, instance_name, push_name, attempts, last_seen
+           FROM unresolved_lids
+           WHERE resolved = false
+           ORDER BY last_seen DESC LIMIT 50"""
+    )
+    return [dict(r) for r in rows] if rows else []

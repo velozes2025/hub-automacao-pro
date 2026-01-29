@@ -94,6 +94,23 @@ def resolve_lid_to_phone(instance_name, lid_jid):
         return None
 
 
+def fetch_all_contacts(instance_name):
+    """Busca todos os contatos de uma instancia."""
+    try:
+        r = requests.post(
+            f'{EVOLUTION_URL}/chat/findContacts/{instance_name}',
+            headers=_HEADERS,
+            json={},
+            timeout=10
+        )
+        if r.status_code == 200:
+            data = r.json()
+            return data if isinstance(data, list) else []
+        return []
+    except Exception:
+        return []
+
+
 def set_typing(instance_name, phone, typing=True):
     try:
         requests.post(
