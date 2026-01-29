@@ -14,17 +14,28 @@ _lid_cache = {}
 
 
 def resolve_lid_to_phone(instance_name, lid_jid):
-    """Resolve a LID JID to a real phone number using Evolution contacts API.
+    """Resolve a LID JID to a real phone number.
 
-    WhatsApp uses LID (Linked ID) format for some contacts. The Evolution API
-    cannot send messages to LID addresses directly, so we resolve them by
-    matching profilePicUrl between the LID contact and @s.whatsapp.net contacts.
+    Order: 1) memory cache, 2) DB mapping, 3) contacts profilePicUrl, 4) contacts pushName.
+    Auto-saves resolved mappings to DB for future use.
     """
+    import db as _db
+
     if lid_jid in _lid_cache:
         return _lid_cache[lid_jid]
 
+    # Strategy 1: Check DB mapping table
     try:
-        # Get all contacts for this instance
+        db_phone = _db.get_lid_phone(lid_jid, instance_name)
+        if db_phone:
+            _lid_cache[lid_jid] = db_phone
+            log.info(f'LID resolvido via DB: {lid_jid} -> {db_phone}')
+            return db_phone
+    except Exception:
+        pass
+
+    # Strategy 2+3: Contacts API
+    try:
         r = requests.post(
             f'{EVOLUTION_URL}/chat/findContacts/{instance_name}',
             headers=_HEADERS,
@@ -39,7 +50,6 @@ def resolve_lid_to_phone(instance_name, lid_jid):
         if not isinstance(contacts, list):
             return None
 
-        # Find the LID contact
         lid_contact = None
         for c in contacts:
             if c.get('remoteJid') == lid_jid:
@@ -52,17 +62,18 @@ def resolve_lid_to_phone(instance_name, lid_jid):
         pic_url = lid_contact.get('profilePicUrl')
         push_name = lid_contact.get('pushName', '')
 
-        # Strategy 1: Match by profilePicUrl (most reliable)
+        # Strategy 2: Match by profilePicUrl
         if pic_url:
             for c in contacts:
                 rjid = c.get('remoteJid', '')
                 if rjid.endswith('@s.whatsapp.net') and c.get('profilePicUrl') == pic_url:
                     phone = rjid.split('@')[0]
                     _lid_cache[lid_jid] = phone
+                    _db.save_lid_phone(lid_jid, phone, instance_name, push_name)
                     log.info(f'LID resolvido via profilePic: {lid_jid} -> {phone}')
                     return phone
 
-        # Strategy 2: Match by pushName (less reliable, only if unique match)
+        # Strategy 3: Match by pushName (unique match only)
         if push_name:
             candidates = [
                 c for c in contacts
@@ -72,10 +83,11 @@ def resolve_lid_to_phone(instance_name, lid_jid):
             if len(candidates) == 1:
                 phone = candidates[0]['remoteJid'].split('@')[0]
                 _lid_cache[lid_jid] = phone
+                _db.save_lid_phone(lid_jid, phone, instance_name, push_name)
                 log.info(f'LID resolvido via pushName: {lid_jid} -> {phone}')
                 return phone
 
-        log.warning(f'Nao foi possivel resolver LID: {lid_jid}')
+        log.warning(f'LID nao resolvido: {lid_jid} (push={push_name})')
         return None
     except Exception as e:
         log.error(f'Erro ao resolver LID: {e}')

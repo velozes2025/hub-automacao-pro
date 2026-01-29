@@ -74,3 +74,21 @@ def log_token_usage(empresa_id, model, input_tokens, output_tokens, cost):
         (empresa_id, model, input_tokens, output_tokens, cost),
         fetch=False
     )
+
+
+def get_lid_phone(lid_jid, instance_name):
+    rows = _query(
+        "SELECT phone FROM lid_phone_map WHERE lid = %s AND instance_name = %s LIMIT 1",
+        (lid_jid, instance_name)
+    )
+    return rows[0]['phone'] if rows else None
+
+
+def save_lid_phone(lid_jid, phone, instance_name, push_name=None):
+    _query(
+        """INSERT INTO lid_phone_map (lid, phone, instance_name, push_name)
+           VALUES (%s, %s, %s, %s)
+           ON CONFLICT (lid, instance_name) DO UPDATE SET phone = EXCLUDED.phone""",
+        (lid_jid, phone, instance_name, push_name),
+        fetch=False
+    )
