@@ -23,6 +23,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 log = logging.getLogger('hub-bot')
 
 PENDING_MAX_AGE_SECONDS = 600  # 10 minutos
+RETRY_MAX_ATTEMPTS = 5
+RETRY_INTERVAL_SECONDS = 30
+REENGAGE_CHECK_MINUTES = 25
+REENGAGE_INTERVAL_SECONDS = 300  # 5 minutos entre checks
+MSG_SPLIT_MAX_CHARS = 200
 
 
 # ============================================================
@@ -116,6 +121,116 @@ def is_within_business_hours(empresa):
     if start <= end:
         return start <= now <= end
     return now >= start or now <= end
+
+
+# ============================================================
+# MESSAGE SPLITTING - Simula humano no WhatsApp
+# ============================================================
+
+def split_message(text, max_chars=MSG_SPLIT_MAX_CHARS):
+    """Divide texto longo em chunks curtos, quebrando em limites de frase.
+
+    Retorna lista de strings. Mensagens curtas voltam como lista de 1 item.
+    """
+    text = text.strip()
+    if len(text) <= max_chars:
+        return [text]
+
+    # Quebrar em sentencas (ponto, exclamacao, interrogacao seguidos de espaco)
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    chunks = []
+    current = ''
+
+    for sentence in sentences:
+        if not sentence:
+            continue
+        # Se a sentenca sozinha ja estoura, corta no espaco mais proximo
+        if len(sentence) > max_chars:
+            if current:
+                chunks.append(current.strip())
+                current = ''
+            words = sentence.split()
+            buf = ''
+            for w in words:
+                if buf and len(buf) + 1 + len(w) > max_chars:
+                    chunks.append(buf.strip())
+                    buf = w
+                else:
+                    buf = f'{buf} {w}'.strip()
+            if buf:
+                current = buf
+            continue
+
+        if current and len(current) + 1 + len(sentence) > max_chars:
+            chunks.append(current.strip())
+            current = sentence
+        else:
+            current = f'{current} {sentence}'.strip()
+
+    if current:
+        chunks.append(current.strip())
+
+    return chunks if chunks else [text]
+
+
+def send_with_retry(instance_name, phone, text, empresa_id='', push_name=''):
+    """Envia mensagem via Evolution API. Se falhar, salva na fila de retry.
+
+    Retorna True se enviou com sucesso, False se foi pra fila.
+    """
+    sent = evolution.send_message(instance_name, phone, text)
+    if sent:
+        return True
+
+    # Falhou: salvar na fila de retry
+    try:
+        db.save_failed_response(instance_name, phone, text, empresa_id, push_name)
+        log.warning(f'[RETRY-QUEUE] Resposta salva para retry: {instance_name} -> {phone}')
+    except Exception as e:
+        log.error(f'[RETRY-QUEUE] CRITICO - falha ao salvar na fila: {e}')
+    return False
+
+
+def send_split_messages(instance_name, phone, text, empresa_id='', push_name=''):
+    """Envia mensagem dividida em chunks com typing entre cada um.
+
+    Se algum chunk falhar, salva o restante na fila de retry.
+    """
+    chunks = split_message(text)
+
+    if len(chunks) == 1:
+        # Mensagem curta: envio normal com typing
+        typing_secs = max(2.0, min(len(text) / 40.0, 8.0))
+        evolution.set_typing(instance_name, phone, True)
+        time.sleep(typing_secs)
+        evolution.set_typing(instance_name, phone, False)
+        return send_with_retry(instance_name, phone, text, empresa_id, push_name)
+
+    # Multiplos chunks: enviar com typing entre cada
+    all_sent = True
+    for i, chunk in enumerate(chunks):
+        typing_secs = max(1.5, min(len(chunk) / 40.0, 5.0))
+        evolution.set_typing(instance_name, phone, True)
+        time.sleep(typing_secs)
+        evolution.set_typing(instance_name, phone, False)
+
+        sent = send_with_retry(instance_name, phone, chunk, empresa_id, push_name)
+        if not sent:
+            # Falhou: salvar chunks restantes como uma mensagem na fila
+            remaining = ' '.join(chunks[i + 1:])
+            if remaining:
+                try:
+                    db.save_failed_response(instance_name, phone, remaining, empresa_id, push_name)
+                except Exception:
+                    pass
+            all_sent = False
+            break
+
+        # Pausa entre chunks (simula humano pensando)
+        if i < len(chunks) - 1:
+            time.sleep(1.0)
+
+    return all_sent
 
 
 # ============================================================
@@ -395,7 +510,7 @@ def process_message(payload):
                     evolution.send_message(instance_name, send_phone, msg_fora)
             return
 
-        # --- Digitando ---
+        # --- Digitando (indica que esta processando) ---
         can_send = not lid_unresolved
         if can_send:
             evolution.set_typing(instance_name, send_phone, True)
@@ -408,9 +523,11 @@ def process_message(payload):
         db.save_message(empresa_id, db_phone, 'user', text, push_name)
         history.append({'role': 'user', 'content': text})
 
-        # Atualizar status do lead para em_andamento
+        # Atualizar status do lead e tracking de interacao
         try:
             db.update_lead_status(empresa_id, db_phone, 'em_andamento')
+            db.update_last_client_msg(empresa_id, db_phone)
+            db.reset_reengagement(empresa_id, db_phone)
         except Exception:
             pass
 
@@ -468,7 +585,7 @@ def process_message(payload):
             result['cost']
         )
 
-        # --- ENVIO ---
+        # --- ENVIO (com garantia de entrega) ---
         if lid_unresolved:
             # LID nao resolvido: salvar resposta como pendente
             db.save_pending_response(phone, instance_name, response_text, push_name)
@@ -482,22 +599,192 @@ def process_message(payload):
                 _deliver_pending_responses(instance_name, phone, resolved_late)
             return
 
-        # Delay proporcional (simula digitacao real ~40 chars/seg)
-        typing_secs = max(2.0, min(len(response_text) / 40.0, 8.0))
-        evolution.set_typing(instance_name, send_phone, True)
-        time.sleep(typing_secs)
-
-        # Enviar
-        evolution.set_typing(instance_name, send_phone, False)
-        sent = evolution.send_message(instance_name, send_phone, response_text)
+        # Enviar com split de mensagens + retry automatico
+        sent = send_split_messages(instance_name, send_phone, response_text, empresa_id, push_name)
 
         if sent:
             log.info(f'[{instance_name}] {send_phone}: "{text[:40]}" -> "{response_text[:40]}"')
+            try:
+                db.update_last_bot_msg(empresa_id, db_phone)
+            except Exception:
+                pass
         else:
-            log.error(f'[{instance_name}] FALHA ENVIO para {send_phone}. Resposta: "{response_text[:40]}"')
+            log.warning(f'[{instance_name}] Envio falhou, salvo na fila de retry: {send_phone}')
 
     except Exception as e:
         log.error(f'Erro ao processar mensagem: {e}', exc_info=True)
+        # GARANTIA: se temos dados suficientes, salvar resposta na fila
+        _locals = locals()
+        try:
+            _resp = _locals.get('response_text', '')
+            _phone = _locals.get('send_phone', '')
+            _inst = _locals.get('instance_name', '')
+            if _resp and _phone and _inst:
+                db.save_failed_response(
+                    _inst, _phone, _resp,
+                    _locals.get('empresa_id', ''),
+                    _locals.get('push_name', '')
+                )
+                log.info(f'[GARANTIA] Resposta salva na fila apos excecao')
+        except Exception:
+            log.error(f'[GARANTIA] CRITICO - nao conseguiu salvar na fila de retry')
+
+
+# ============================================================
+# BACKGROUND: RETRY PROCESSOR (respostas falhadas)
+# ============================================================
+
+def _background_retry_processor():
+    """Thread que reenvia respostas falhadas a cada 30s.
+
+    Max 5 tentativas por resposta. Apos isso, loga como perdida.
+    """
+    while True:
+        try:
+            time.sleep(RETRY_INTERVAL_SECONDS)
+            pending = db.get_pending_retries(max_attempts=RETRY_MAX_ATTEMPTS)
+            if not pending:
+                continue
+
+            log.info(f'[RETRY] Processando {len(pending)} respostas falhadas')
+
+            for entry in pending:
+                fid = entry['id']
+                inst = entry['instance_name']
+                phone = entry['phone']
+                text = entry['response_text']
+
+                sent = evolution.send_message(inst, phone, text)
+                if sent:
+                    db.mark_failed_delivered(fid)
+                    log.info(f'[RETRY] Entregue com sucesso: {inst} -> {phone} (tentativa {entry["attempts"] + 1})')
+                    # Atualizar last_bot_msg
+                    try:
+                        if entry.get('empresa_id'):
+                            db.update_last_bot_msg(entry['empresa_id'], phone)
+                    except Exception:
+                        pass
+                else:
+                    db.increment_retry(fid)
+                    attempts = entry['attempts'] + 1
+                    if attempts >= RETRY_MAX_ATTEMPTS:
+                        log.error(f'[RETRY] DESISTIU apos {RETRY_MAX_ATTEMPTS} tentativas: {inst} -> {phone}')
+                    else:
+                        log.warning(f'[RETRY] Falhou novamente ({attempts}/{RETRY_MAX_ATTEMPTS}): {inst} -> {phone}')
+
+        except Exception as e:
+            log.error(f'[RETRY] Erro no processador: {e}', exc_info=True)
+
+
+# ============================================================
+# BACKGROUND: REENGAGEMENT (clientes sem resposta / inativos)
+# ============================================================
+
+REENGAGE_MESSAGES_PT = [
+    'Oi{nome}! Fiquei pensando sobre o que conversamos. Se tiver alguma duvida, to por aqui.',
+    'E ai{nome}, tudo certo? Fico a disposicao se precisar de algo.',
+    '{nome_ou_oi}, se quiser continuar de onde paramos, e so me chamar.',
+]
+
+REENGAGE_MESSAGES_EN = [
+    'Hey{nome}! Just checking in. Let me know if you have any questions.',
+    'Hi{nome}, still here if you need anything!',
+    '{nome_ou_oi}, feel free to reach out whenever you are ready.',
+]
+
+REENGAGE_MESSAGES_ES = [
+    'Hola{nome}! Quedo a tu disposicion si tienes alguna duda.',
+    '{nome_ou_oi}, si necesitas algo, aqui estoy.',
+    'Hola{nome}, seguimos cuando quieras!',
+]
+
+_reengage_idx = 0
+
+
+def _get_reengage_msg(push_name='', lang='pt'):
+    """Retorna mensagem de reengajamento variada."""
+    global _reengage_idx
+
+    nome = ''
+    nome_ou_oi = 'Oi'
+    if push_name and is_real_name(push_name):
+        first = push_name.strip().split()[0]
+        nome = f' {first}'
+        nome_ou_oi = first
+
+    if lang == 'en':
+        msgs = REENGAGE_MESSAGES_EN
+        if not nome:
+            nome_ou_oi = 'Hey'
+    elif lang == 'es':
+        msgs = REENGAGE_MESSAGES_ES
+        if not nome:
+            nome_ou_oi = 'Hola'
+    else:
+        msgs = REENGAGE_MESSAGES_PT
+
+    msg = msgs[_reengage_idx % len(msgs)]
+    _reengage_idx += 1
+
+    return msg.format(nome=nome, nome_ou_oi=nome_ou_oi)
+
+
+def _background_reengagement():
+    """Thread que detecta clientes inativos e envia msg de reengajamento.
+
+    Roda a cada 5 minutos. Max 2 reengajamentos por lead.
+    """
+    while True:
+        try:
+            time.sleep(REENGAGE_INTERVAL_SECONDS)
+            stale = db.get_stale_conversations(minutes=REENGAGE_CHECK_MINUTES)
+            if not stale:
+                continue
+
+            log.info(f'[REENGAGE] Encontrou {len(stale)} conversas inativas')
+
+            for lead in stale:
+                empresa_id = lead['empresa_id']
+                phone = lead['phone']
+                inst = lead['instance_name']
+                push_name = lead.get('push_name', '')
+                lang = 'pt'
+
+                # Detectar idioma da ultima conversa
+                try:
+                    history = db.get_conversation_history(empresa_id, phone, 3)
+                    if history:
+                        last_user = [h for h in history if h['role'] == 'user']
+                        if last_user:
+                            lang = detect_language(last_user[-1]['content'])
+                except Exception:
+                    pass
+
+                msg = _get_reengage_msg(push_name, lang)
+
+                # Typing + envio
+                evolution.set_typing(inst, phone, True)
+                time.sleep(2.5)
+                evolution.set_typing(inst, phone, False)
+                sent = evolution.send_message(inst, phone, msg)
+
+                if sent:
+                    db.increment_reengagement(empresa_id, phone)
+                    # Salvar no historico
+                    try:
+                        db.save_message(empresa_id, phone, 'assistant', msg)
+                        db.update_last_bot_msg(empresa_id, phone)
+                    except Exception:
+                        pass
+                    log.info(f'[REENGAGE] Enviado para {phone} ({inst}): "{msg[:50]}"')
+                else:
+                    log.warning(f'[REENGAGE] Falha envio para {phone} ({inst})')
+
+                # Pausa entre envios para nao sobrecarregar
+                time.sleep(3)
+
+        except Exception as e:
+            log.error(f'[REENGAGE] Erro: {e}', exc_info=True)
 
 
 # ============================================================
@@ -550,5 +837,15 @@ if __name__ == '__main__':
     resolver_thread = threading.Thread(target=_background_lid_resolver, daemon=True)
     resolver_thread.start()
     log.info('Background LID resolver iniciado')
+
+    # Iniciar retry processor (respostas falhadas)
+    retry_thread = threading.Thread(target=_background_retry_processor, daemon=True)
+    retry_thread.start()
+    log.info('Background retry processor iniciado')
+
+    # Iniciar reengagement (clientes inativos)
+    reengage_thread = threading.Thread(target=_background_reengagement, daemon=True)
+    reengage_thread.start()
+    log.info('Background reengagement iniciado')
 
     app.run(host='0.0.0.0', port=3000)

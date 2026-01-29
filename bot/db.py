@@ -169,6 +169,9 @@ def ensure_tables():
                detected_language TEXT DEFAULT 'pt',
                status TEXT DEFAULT 'novo',
                instance_name TEXT DEFAULT '',
+               last_client_msg_at TIMESTAMPTZ DEFAULT NULL,
+               last_bot_msg_at TIMESTAMPTZ DEFAULT NULL,
+               reengagement_count INTEGER DEFAULT 0,
                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
            )""",
@@ -179,6 +182,36 @@ def ensure_tables():
            ON leads (phone, empresa_id)""",
         fetch=False
     )
+    # Tabela de respostas falhadas (retry queue)
+    _query(
+        """CREATE TABLE IF NOT EXISTS failed_responses (
+               id SERIAL PRIMARY KEY,
+               instance_name TEXT NOT NULL,
+               phone TEXT NOT NULL,
+               response_text TEXT NOT NULL,
+               empresa_id TEXT DEFAULT '',
+               push_name TEXT DEFAULT '',
+               attempts INTEGER DEFAULT 0,
+               delivered BOOLEAN DEFAULT false,
+               last_attempt TIMESTAMPTZ DEFAULT NULL,
+               created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+           )""",
+        fetch=False
+    )
+    # Adicionar colunas novas a leads se nao existirem (migracao)
+    for col, default in [
+        ('last_client_msg_at', 'NULL'),
+        ('last_bot_msg_at', 'NULL'),
+        ('reengagement_count', '0'),
+    ]:
+        try:
+            _query(
+                f"ALTER TABLE leads ADD COLUMN IF NOT EXISTS {col} "
+                f"{'TIMESTAMPTZ' if 'msg_at' in col else 'INTEGER'} DEFAULT {default}",
+                fetch=False
+            )
+        except Exception:
+            pass
 
 
 def save_pending_response(lid_jid, instance_name, response_text, push_name=''):
@@ -212,6 +245,125 @@ def mark_responses_delivered(ids):
     )
 
 
+# --- Failed Responses (retry queue) ---
+
+def save_failed_response(instance_name, phone, response_text, empresa_id='', push_name=''):
+    """Salva resposta que falhou no envio para retry posterior."""
+    _query(
+        """INSERT INTO failed_responses
+               (instance_name, phone, response_text, empresa_id, push_name)
+           VALUES (%s, %s, %s, %s, %s)""",
+        (instance_name, phone, response_text, empresa_id, push_name),
+        fetch=False
+    )
+
+
+def get_pending_retries(max_attempts=5, limit=50):
+    """Busca respostas falhadas que ainda podem ser reenviadas."""
+    rows = _query(
+        """SELECT id, instance_name, phone, response_text, empresa_id,
+                  push_name, attempts, created_at
+           FROM failed_responses
+           WHERE delivered = false AND attempts < %s
+           ORDER BY created_at ASC LIMIT %s""",
+        (max_attempts, limit)
+    )
+    return [dict(r) for r in rows] if rows else []
+
+
+def increment_retry(failed_id):
+    """Incrementa contador de tentativas de uma resposta falhada."""
+    _query(
+        """UPDATE failed_responses
+           SET attempts = attempts + 1, last_attempt = CURRENT_TIMESTAMP
+           WHERE id = %s""",
+        (failed_id,),
+        fetch=False
+    )
+
+
+def mark_failed_delivered(failed_id):
+    """Marca resposta falhada como entregue com sucesso."""
+    _query(
+        """UPDATE failed_responses SET delivered = true, last_attempt = CURRENT_TIMESTAMP
+           WHERE id = %s""",
+        (failed_id,),
+        fetch=False
+    )
+
+
+# --- Reengagement tracking ---
+
+def get_stale_conversations(minutes=25, limit=30):
+    """Busca leads que enviaram msg mas nao receberam resposta,
+    ou que estao inativos ha X minutos apos ultima interacao do bot."""
+    rows = _query(
+        """SELECT l.empresa_id, l.phone, l.push_name, l.instance_name,
+                  l.last_client_msg_at, l.last_bot_msg_at,
+                  l.reengagement_count, e.system_prompt, e.model, e.max_tokens
+           FROM leads l
+           JOIN empresas e ON l.empresa_id::uuid = e.id
+           WHERE e.status = 'ativo'
+             AND l.last_client_msg_at IS NOT NULL
+             AND l.instance_name != ''
+             AND l.reengagement_count < 2
+             AND (
+                 -- Cliente mandou msg e bot nunca respondeu
+                 (l.last_bot_msg_at IS NULL
+                  AND l.last_client_msg_at < NOW() - make_interval(mins => %s))
+                 OR
+                 -- Bot respondeu mas cliente sumiu
+                 (l.last_bot_msg_at IS NOT NULL
+                  AND l.last_bot_msg_at > l.last_client_msg_at
+                  AND l.last_bot_msg_at < NOW() - make_interval(mins => %s))
+             )
+           ORDER BY l.last_client_msg_at ASC LIMIT %s""",
+        (minutes, minutes, limit)
+    )
+    return [dict(r) for r in rows] if rows else []
+
+
+def update_last_client_msg(empresa_id, phone):
+    """Atualiza timestamp da ultima msg do cliente."""
+    _query(
+        """UPDATE leads SET last_client_msg_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+           WHERE empresa_id = %s AND phone = %s""",
+        (empresa_id, phone),
+        fetch=False
+    )
+
+
+def update_last_bot_msg(empresa_id, phone):
+    """Atualiza timestamp da ultima msg do bot."""
+    _query(
+        """UPDATE leads SET last_bot_msg_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+           WHERE empresa_id = %s AND phone = %s""",
+        (empresa_id, phone),
+        fetch=False
+    )
+
+
+def increment_reengagement(empresa_id, phone):
+    """Incrementa contador de reengajamento."""
+    _query(
+        """UPDATE leads SET reengagement_count = reengagement_count + 1,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE empresa_id = %s AND phone = %s""",
+        (empresa_id, phone),
+        fetch=False
+    )
+
+
+def reset_reengagement(empresa_id, phone):
+    """Reseta contador de reengajamento quando cliente volta a interagir."""
+    _query(
+        """UPDATE leads SET reengagement_count = 0, updated_at = CURRENT_TIMESTAMP
+           WHERE empresa_id = %s AND phone = %s""",
+        (empresa_id, phone),
+        fetch=False
+    )
+
+
 # --- Leads ---
 
 def upsert_lead(empresa_id, phone, push_name='', lid='', origin='whatsapp',
@@ -220,12 +372,14 @@ def upsert_lead(empresa_id, phone, push_name='', lid='', origin='whatsapp',
     _query(
         """INSERT INTO leads
                (empresa_id, phone, push_name, lid, origin, first_message,
-                detected_language, instance_name)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                detected_language, instance_name, last_client_msg_at)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
            ON CONFLICT (phone, empresa_id) DO UPDATE SET
                push_name = COALESCE(NULLIF(EXCLUDED.push_name, ''), leads.push_name),
                lid = COALESCE(NULLIF(EXCLUDED.lid, ''), leads.lid),
                detected_language = EXCLUDED.detected_language,
+               last_client_msg_at = CURRENT_TIMESTAMP,
+               reengagement_count = 0,
                updated_at = CURRENT_TIMESTAMP""",
         (empresa_id, phone, push_name, lid, origin, first_message,
          detected_language, instance_name),
