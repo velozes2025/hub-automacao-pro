@@ -57,6 +57,37 @@ def get_text_from_message(data):
     )
 
 
+def is_real_name(name):
+    """Detecta se o pushName parece um nome real de pessoa."""
+    if not name or len(name.strip()) < 2:
+        return False
+    n = name.strip().lower()
+    # Palavras que indicam que NAO e nome de pessoa
+    fake_names = {
+        'automation', 'bot', 'business', 'company', 'enterprise', 'admin',
+        'test', 'teste', 'user', 'usuario', 'client', 'cliente', 'support',
+        'suporte', 'info', 'contact', 'contato', 'shop', 'store', 'loja',
+        'marketing', 'sales', 'vendas', 'service', 'servico', 'official',
+        'oficial', 'news', 'tech', 'digital', 'group', 'grupo', 'team',
+        'equipe', 'manager', 'gerente', 'assistant', 'assistente', 'help',
+        'ajuda', 'welcome', 'delivery', 'app', 'web', 'dev', 'api',
+    }
+    # Se e exatamente uma palavra fake
+    if n in fake_names:
+        return False
+    # Se contem apenas emojis/simbolos (sem letras)
+    if not re.search(r'[a-zA-ZÀ-ÿ]', name):
+        return False
+    # Se e so 1 caractere
+    if len(name.strip()) == 1:
+        return False
+    # Se parece nome de empresa (palavras comuns de empresa)
+    biz_patterns = r'\b(llc|ltd|inc|corp|sa|ltda|eireli|mei|co\.)\b'
+    if re.search(biz_patterns, n):
+        return False
+    return True
+
+
 def detect_language(text):
     """Detecta idioma do texto por heuristica simples."""
     t = text.lower()
@@ -387,20 +418,30 @@ def process_message(payload):
         base_prompt = empresa.get('system_prompt', '')
         contact_info = db.get_contact_info(empresa_id, db_phone)
 
+        raw_name = (contact_info.get('push_name') if contact_info else None) or push_name or ''
+        nome = raw_name if is_real_name(raw_name) else ''
+        nome_instrucao = ''
+        if not nome:
+            nome_instrucao = (
+                'IMPORTANTE: Voce NAO sabe o nome dessa pessoa. '
+                'Pergunte o nome dela de forma natural antes de continuar. '
+                'NAO invente nenhum nome, NAO use apelidos do perfil como nome. '
+            )
+
         if contact_info and contact_info['total_msgs'] > 1:
-            nome = contact_info.get('push_name') or push_name or ''
             total = contact_info['total_msgs']
             ctx = (
-                f'\n\nCONTEXTO: Falando com {nome}. Ja trocaram {total} msgs. '
+                f'\n\nCONTEXTO: Ja trocaram {total} msgs. '
                 f'Idioma detectado: {lang}. '
+                f'{f"Nome do cliente: {nome}. Chame pelo nome. " if nome else nome_instrucao}'
                 f'NAO se apresente de novo. Continue a conversa naturalmente. '
-                f'Chame pelo nome. Seja proativo, sugira, pergunte.'
+                f'Seja proativo, sugira, pergunte.'
             )
         else:
-            nome = push_name or ''
             ctx = (
-                f'\n\nCONTEXTO: Primeiro contato{" com " + nome if nome else ""}. '
+                f'\n\nCONTEXTO: Primeiro contato. '
                 f'Idioma detectado: {lang}. RESPONDA NESSE IDIOMA. '
+                f'{f"Nome do cliente: {nome}. " if nome else nome_instrucao}'
                 f'Se apresente: Oliver, quantrexnow.io. '
                 f'Pergunte o ramo do negocio e como pode ajudar. So nesta primeira vez.'
             )
