@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% set active = "dashboard" %}
+{% block title %}Dashboard - Hub Automacao Pro{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>Clientes ({{ empresas|length }})</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Empresa</th>
+                <th>Instancia</th>
+                <th>Status</th>
+                <th>Modelo</th>
+                <th>Msgs Hoje</th>
+                <th>Acoes</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for e in empresas %}
+            <tr>
+                <td><a href="/admin/clients/{{ e.id }}">{{ e.nome }}</a></td>
+                <td><code>{{ e.whatsapp_instance or '-' }}</code></td>
+                <td id="status-{{ e.id }}">
+                    {% if e.status == 'inativo' %}
+                        <span class="dot dot-red"></span>Inativo
+                    {% else %}
+                        <span class="dot dot-yellow"></span>Verificando...
+                    {% endif %}
+                </td>
+                <td>{{ e.model.split('-')[-1][:10] }}</td>
+                <td id="msgs-{{ e.id }}">{{ e.msgs_hoje or 0 }}</td>
+                <td>
+                    <a href="/admin/clients/{{ e.id }}" class="btn btn-sm btn-primary">Ver</a>
+                    {% if e.client_token %}
+                    <a href="/qr/{{ e.client_token }}" class="btn btn-sm" style="background:#333;" target="_blank">QR</a>
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        {% if not empresas %}
+            <tr><td colspan="6" style="text-align:center;color:#666;">Nenhum cliente cadastrado</td></tr>
+        {% endif %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+// Verificar status de conexao via AJAX
+document.addEventListener('DOMContentLoaded', function() {
+    const ids = {{ empresa_ids | tojson }};
+    const instances = {{ empresa_instances | tojson }};
+    ids.forEach(function(id, i) {
+        if (!instances[i]) return;
+        fetch('/admin/api/status/' + id)
+            .then(r => r.json())
+            .then(data => {
+                const el = document.getElementById('status-' + id);
+                if (data.state === 'open') {
+                    el.innerHTML = '<span class="dot dot-green"></span>Conectado';
+                } else if (data.state === 'connecting') {
+                    el.innerHTML = '<span class="dot dot-yellow"></span>Conectando';
+                } else {
+                    el.innerHTML = '<span class="dot dot-red"></span>Desconectado';
+                }
+            })
+            .catch(() => {});
+    });
+});
+</script>
+{% endblock %}

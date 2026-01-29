@@ -42,86 +42,56 @@ services:
       retries: 5
 
   # ============================================
-  # n8n - Automacao de Workflows
-  # ============================================
-  n8n:
-    image: n8nio/n8n:latest
-    container_name: hub-n8n
-    restart: unless-stopped
-    ports:
-      - "5678:5678"
-    environment:
-      - DB_TYPE=postgresdb
-      - DB_POSTGRESDB_HOST=postgres
-      - DB_POSTGRESDB_PORT=5432
-      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB:-hub_database}
-      - DB_POSTGRESDB_USER=${POSTGRES_USER:-hub_user}
-      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-hub_secret_2024}
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
-      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-admin123}
-      - N8N_HOST=${N8N_HOST:-localhost}
-      - N8N_PORT=5678
-      - N8N_PROTOCOL=http
-      - WEBHOOK_URL=${WEBHOOK_URL:-http://localhost:5678/}
-      - GENERIC_TIMEZONE=${TIMEZONE:-America/Sao_Paulo}
-      # API Keys para workflows
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY:-}
-      - EVOLUTION_SERVER_URL=http://evolution:8080
-    volumes:
-      - n8n_data:/home/node/.n8n
-    networks:
-      - hub-network
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  # ============================================
-  # Evolution API - WhatsApp API
+  # Evolution API v2 - WhatsApp API
   # ============================================
   evolution:
-    image: atendai/evolution-api:v1.8.2
+    image: atendai/evolution-api:v2.2.3
     container_name: hub-evolution
     restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
-      # Autenticacao
-      - AUTHENTICATION_TYPE=apikey
-      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-sua-chave-global-aqui}
-      - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
+      # Servidor
+      - SERVER_URL=http://104.248.180.81:8080
+      - SERVER_PORT=8080
 
-      # Armazenamento (usando arquivos locais na v1.x)
-      - STORE_MESSAGES=true
-      - STORE_MESSAGE_UP=true
-      - STORE_CONTACTS=true
-      - STORE_CHATS=true
+      # Autenticacao
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-sua-chave-global-aqui}
+
+      # Banco de dados (PostgreSQL)
+      - DATABASE_ENABLED=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://${POSTGRES_USER:-hub_user}:${POSTGRES_PASSWORD:-hub_secret_2024}@postgres:5432/${POSTGRES_DB:-hub_database}?schema=evolution
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-hub_user}:${POSTGRES_PASSWORD:-hub_secret_2024}@postgres:5432/${POSTGRES_DB:-hub_database}?schema=evolution
+      - DATABASE_SAVE_DATA_INSTANCE=true
+      - DATABASE_SAVE_DATA_NEW_MESSAGE=true
+      - DATABASE_SAVE_MESSAGE_UPDATE=true
+      - DATABASE_SAVE_DATA_CONTACTS=true
+      - DATABASE_SAVE_DATA_CHATS=true
 
       # Redis para cache
-      - REDIS_ENABLED=true
-      - REDIS_URI=redis://redis:6379
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://redis:6379
+      - CACHE_REDIS_PREFIX_KEY=evolution
+      - CACHE_LOCAL_ENABLED=false
 
       # Logs
-      - LOG_LEVEL=DEBUG
-      - LOG_COLOR=true
+      - LOG_LEVEL=ERROR,WARN,DEBUG,INFO,LOG,VERBOSE,DARK,WEBHOOKS
+      - LOG_BAILEYS=info
 
       # Instancias
       - DEL_INSTANCE=false
 
-      # Webhook Global
+      # Webhook Global (desligado - usamos por instancia)
       - WEBHOOK_GLOBAL_ENABLED=false
-      - WEBHOOK_GLOBAL_URL=${WEBHOOK_GLOBAL_URL:-}
 
       # QR Code
       - QRCODE_LIMIT=30
-      - QRCODE_COLOR=#000000
 
-      # Configuracoes de Mensagem
+      # Configuracoes de Sessao
       - CONFIG_SESSION_PHONE_CLIENT=Evolution API
       - CONFIG_SESSION_PHONE_NAME=Chrome
+      - CONFIG_SESSION_PHONE_VERSION=
 
       # Timezone
       - TZ=${TIMEZONE:-America/Sao_Paulo}
@@ -131,27 +101,64 @@ services:
     networks:
       - hub-network
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
 
   # ============================================
-  # Eva Bot - Script Python Direto
+  # Hub Bot - Webhook Multi-Cliente
   # ============================================
-  eva-bot:
+  hub-bot:
     build: ./bot
-    container_name: hub-eva-bot
+    container_name: hub-bot
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-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}
-      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY:-c5dd0eb4d0a4780a2816dcfb37c68020}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY}
       - EVOLUTION_URL=http://evolution:8080
-      - INSTANCE_NAME=eva_bot
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${POSTGRES_DB:-hub_database}
+      - DB_USER=${POSTGRES_USER:-hub_user}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
     networks:
       - hub-network
     depends_on:
-      - evolution
+      postgres:
+        condition: service_healthy
+      evolution:
+        condition: service_started
+
+  # ============================================
+  # Admin Panel - Gestao de Clientes
+  # ============================================
+  admin-panel:
+    build: ./qr-server
+    container_name: hub-admin
+    restart: unless-stopped
+    ports:
+      - "9615:9615"
+    environment:
+      - EVOLUTION_URL=http://evolution:8080
+      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY}
+      - BOT_INTERNAL_URL=http://hub-bot:3000
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${POSTGRES_DB:-hub_database}
+      - DB_USER=${POSTGRES_USER:-hub_user}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - SECRET_KEY=${ADMIN_SECRET_KEY:-mude-em-producao}
+      - ADMIN_DEFAULT_PASSWORD=${ADMIN_DEFAULT_PASSWORD:-admin123}
+    networks:
+      - hub-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      evolution:
+        condition: service_started
 
 # ============================================
 # Volumes Persistentes
@@ -160,8 +167,6 @@ volumes:
   postgres_data:
     driver: local
   redis_data:
-    driver: local
-  n8n_data:
     driver: local
   evolution_instances:
     driver: local

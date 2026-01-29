@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% set active = "new" if not empresa else "" %}
+{% block title %}{{ 'Novo Cliente' if not empresa else 'Editar ' + empresa.nome }}{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>{{ 'Novo Cliente' if not empresa else 'Editar: ' + empresa.nome }}</h2>
+    <form method="POST" action="{{ '/admin/clients' if not empresa else '/admin/clients/' + empresa.id|string }}">
+        <div class="form-row">
+            <div class="form-group">
+                <label>Nome da Empresa *</label>
+                <input type="text" name="nome" value="{{ empresa.nome if empresa else '' }}" required>
+            </div>
+            <div class="form-group">
+                <label>Nome da Instancia (slug)</label>
+                <input type="text" name="whatsapp_instance"
+                       value="{{ empresa.whatsapp_instance if empresa else '' }}"
+                       placeholder="ex: loja-abc (gerado automaticamente se vazio)"
+                       {{ 'readonly' if empresa and empresa.whatsapp_instance }}>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label>System Prompt (instrucoes para a IA) *</label>
+            <textarea name="system_prompt" required style="min-height:120px;">{{ empresa.system_prompt if empresa else '' }}</textarea>
+        </div>
+
+        <div class="form-row">
+            <div class="form-group">
+                <label>Modelo Claude</label>
+                <select name="model">
+                    {% set current = empresa.model if empresa else 'claude-3-haiku-20240307' %}
+                    <option value="claude-3-haiku-20240307" {{ 'selected' if current == 'claude-3-haiku-20240307' }}>Haiku (rapido/barato)</option>
+                    <option value="claude-3-5-haiku-20241022" {{ 'selected' if current == 'claude-3-5-haiku-20241022' }}>Haiku 3.5</option>
+                    <option value="claude-3-5-sonnet-20241022" {{ 'selected' if current == 'claude-3-5-sonnet-20241022' }}>Sonnet 3.5</option>
+                    <option value="claude-sonnet-4-20250514" {{ 'selected' if current == 'claude-sonnet-4-20250514' }}>Sonnet 4</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Max Tokens (tamanho da resposta)</label>
+                <input type="number" name="max_tokens" value="{{ empresa.max_tokens if empresa else 150 }}" min="10" max="4096">
+            </div>
+        </div>
+
+        <div class="form-row">
+            <div class="form-group">
+                <label>Nome do Atendente (persona)</label>
+                <input type="text" name="persona_name" value="{{ empresa.persona_name if empresa else '' }}" placeholder="ex: Thiago">
+            </div>
+            <div class="form-group">
+                <label>Mensagem de Boas-vindas</label>
+                <input type="text" name="greeting_message" value="{{ empresa.greeting_message if empresa else '' }}" placeholder="ex: Ola! Bem-vindo...">
+            </div>
+        </div>
+
+        <div class="form-row">
+            <div class="form-group">
+                <label>Horario Inicio (opcional)</label>
+                <input type="time" name="business_hours_start" value="{{ empresa.business_hours_start if empresa and empresa.business_hours_start else '' }}">
+            </div>
+            <div class="form-group">
+                <label>Horario Fim (opcional)</label>
+                <input type="time" name="business_hours_end" value="{{ empresa.business_hours_end if empresa and empresa.business_hours_end else '' }}">
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label>Mensagem fora do horario</label>
+            <input type="text" name="outside_hours_message" value="{{ empresa.outside_hours_message if empresa else '' }}" placeholder="ex: Nosso horario de atendimento e das 8h as 18h">
+        </div>
+
+        <div class="form-row">
+            <div class="form-group">
+                <label>Delay digitacao (ms)</label>
+                <input type="number" name="typing_delay_ms" value="{{ empresa.typing_delay_ms if empresa else 800 }}" min="0" max="5000">
+            </div>
+            <div class="form-group">
+                <label>Historico de mensagens (max)</label>
+                <input type="number" name="max_history_messages" value="{{ empresa.max_history_messages if empresa else 10 }}" min="1" max="50">
+            </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary" style="margin-top:8px;">
+            {{ 'Criar Cliente' if not empresa else 'Salvar Alteracoes' }}
+        </button>
+    </form>
+</div>
+{% endblock %}

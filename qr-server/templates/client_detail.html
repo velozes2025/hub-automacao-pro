@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}{{ empresa.nome }} - Hub Automacao Pro{% endblock %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+    <h2 style="color:#25d366;">{{ empresa.nome }}</h2>
+    <div style="display:flex;gap:8px;">
+        <a href="/admin/clients/{{ empresa.id }}/edit" class="btn btn-sm btn-primary">Editar</a>
+        {% if empresa.client_token %}
+        <a href="/qr/{{ empresa.client_token }}" class="btn btn-sm" style="background:#333;" target="_blank">Link QR</a>
+        {% endif %}
+        <form method="POST" action="/admin/clients/{{ empresa.id }}/disconnect" style="display:inline;">
+            <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Desconectar WhatsApp?')">Desconectar</button>
+        </form>
+        <form method="POST" action="/admin/clients/{{ empresa.id }}/delete" style="display:inline;">
+            <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Desativar este cliente?')">Desativar</button>
+        </form>
+    </div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+    <!-- Info -->
+    <div class="card">
+        <h2>Informacoes</h2>
+        <table>
+            <tr><td style="color:#888;">Instancia</td><td><code>{{ empresa.whatsapp_instance or '-' }}</code></td></tr>
+            <tr><td style="color:#888;">Status</td><td id="conn-status">Verificando...</td></tr>
+            <tr><td style="color:#888;">Modelo</td><td>{{ empresa.model }}</td></tr>
+            <tr><td style="color:#888;">Max Tokens</td><td>{{ empresa.max_tokens }}</td></tr>
+            <tr><td style="color:#888;">Persona</td><td>{{ empresa.persona_name or '-' }}</td></tr>
+            <tr><td style="color:#888;">Webhook</td><td>{{ 'Configurado' if empresa.webhook_configured else 'Pendente' }}</td></tr>
+            <tr><td style="color:#888;">Criado em</td><td>{{ empresa.created_at.strftime('%d/%m/%Y %H:%M') if empresa.created_at else '-' }}</td></tr>
+        </table>
+        {% if empresa.client_token %}
+        <div style="margin-top:12px;padding:10px;background:#1a1a1a;border-radius:6px;">
+            <span style="color:#888;font-size:0.85em;">Link QR para o cliente:</span><br>
+            <code style="font-size:0.8em;word-break:break-all;">{{ request.host_url }}qr/{{ empresa.client_token }}</code>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- QR Code -->
+    <div class="card" style="text-align:center;">
+        <h2>QR Code</h2>
+        <div id="qr-area" style="padding:20px;">
+            <p style="color:#666;">Carregando...</p>
+        </div>
+        <form method="POST" action="/admin/clients/{{ empresa.id }}/connect" style="margin-top:8px;">
+            <button type="submit" class="btn btn-primary btn-sm">Reconectar</button>
+        </form>
+    </div>
+</div>
+
+<!-- Consumo -->
+<div class="card" style="margin-top:16px;">
+    <h2>Consumo</h2>
+    <table>
+        <tr>
+            <td style="color:#888;">Requisicoes</td>
+            <td>{{ consumo.total_requisicoes or 0 }}</td>
+            <td style="color:#888;">Tokens Total</td>
+            <td>{{ consumo.total_tokens or 0 }}</td>
+            <td style="color:#888;">Custo Estimado</td>
+            <td>${{ '%.4f' % (consumo.custo_total_estimado or 0) }}</td>
+        </tr>
+    </table>
+</div>
+
+<!-- System Prompt -->
+<div class="card" style="margin-top:16px;">
+    <h2>System Prompt</h2>
+    <pre style="white-space:pre-wrap;color:#aaa;font-size:0.9em;">{{ empresa.system_prompt or '(vazio)' }}</pre>
+</div>
+
+<script>
+fetch('/admin/api/status/{{ empresa.id }}')
+    .then(r => r.json())
+    .then(data => {
+        const el = document.getElementById('conn-status');
+        if (data.state === 'open') {
+            el.innerHTML = '<span class="dot dot-green"></span>Conectado';
+            document.getElementById('qr-area').innerHTML = '<p style="color:#25d366;font-size:1.2em;font-weight:bold;">Conectado</p>';
+        } else {
+            el.innerHTML = '<span class="dot dot-red"></span>' + (data.state || 'Desconectado');
+            if (data.qr_base64) {
+                document.getElementById('qr-area').innerHTML = '<img src="' + data.qr_base64 + '" style="max-width:250px;background:#fff;padding:8px;border-radius:8px;">';
+            } else {
+                document.getElementById('qr-area').innerHTML = '<p style="color:#e74c3c;">Sem QR code. Clique em Reconectar.</p>';
+            }
+        }
+    });
+</script>
+{% endblock %}

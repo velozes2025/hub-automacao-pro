@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% set active = "consumption" %}
+{% block title %}Consumo - Hub Automacao Pro{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>Consumo por Empresa</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Empresa</th>
+                <th>Status</th>
+                <th>Requisicoes</th>
+                <th>Tokens Entrada</th>
+                <th>Tokens Saida</th>
+                <th>Tokens Total</th>
+                <th>Custo Estimado</th>
+                <th>Ultimo Uso</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for c in consumos %}
+            <tr>
+                <td>{{ c.empresa_nome }}</td>
+                <td>
+                    {% if c.status == 'ativo' %}
+                    <span class="dot dot-green"></span>Ativo
+                    {% else %}
+                    <span class="dot dot-red"></span>Inativo
+                    {% endif %}
+                </td>
+                <td>{{ c.total_requisicoes or 0 }}</td>
+                <td>{{ c.total_tokens_entrada or 0 }}</td>
+                <td>{{ c.total_tokens_saida or 0 }}</td>
+                <td>{{ c.total_tokens or 0 }}</td>
+                <td>${{ '%.4f' % (c.custo_total_estimado or 0) }}</td>
+                <td>{{ c.ultimo_uso.strftime('%d/%m %H:%M') if c.ultimo_uso else '-' }}</td>
+            </tr>
+        {% endfor %}
+        {% if not consumos %}
+            <tr><td colspan="8" style="text-align:center;color:#666;">Sem dados de consumo</td></tr>
+        {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
