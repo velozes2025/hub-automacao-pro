@@ -11,7 +11,7 @@ SELECT
     id,
     nome,
     COALESCE(whatsapp_instance, LOWER(REPLACE(nome, ' ', '-'))),
-    CASE WHEN ativo = true THEN 'active' ELSE 'inactive' END,
+    CASE WHEN status = 'ativo' THEN 'active' ELSE 'inactive' END,
     jsonb_build_object(
         'greeting_message', COALESCE(greeting_message, ''),
         'persona_name', COALESCE(persona_name, ''),
@@ -29,7 +29,7 @@ INSERT INTO whatsapp_accounts (tenant_id, instance_name, status, config, webhook
 SELECT
     id,
     whatsapp_instance,
-    CASE WHEN ativo = true THEN 'active' ELSE 'inactive' END,
+    CASE WHEN status = 'ativo' THEN 'active' ELSE 'inactive' END,
     jsonb_build_object(
         'business_hours_start', COALESCE(business_hours_start::text, ''),
         'business_hours_end', COALESCE(business_hours_end::text, ''),
@@ -63,10 +63,9 @@ SELECT DISTINCT ON (c.empresa_id, c.phone)
     wa.id,
     c.phone,
     c.push_name,
-    MAX(c.created_at)
+    (SELECT MAX(c2.created_at) FROM conversas c2 WHERE c2.empresa_id = c.empresa_id AND c2.phone = c.phone)
 FROM conversas c
 JOIN whatsapp_accounts wa ON wa.tenant_id = c.empresa_id
-GROUP BY c.empresa_id, c.phone, c.push_name, wa.id
 ON CONFLICT (whatsapp_account_id, contact_phone) DO NOTHING;
 
 -- Then migrate messages
@@ -82,9 +81,10 @@ JOIN whatsapp_accounts wa ON wa.tenant_id = c.empresa_id
 JOIN conversations conv ON conv.whatsapp_account_id = wa.id AND conv.contact_phone = c.phone;
 
 -- 5. Migrar leads -> leads_v2
+-- Note: leads.empresa_id is TEXT, tenants.id is UUID — cast needed
 INSERT INTO leads_v2 (tenant_id, phone, name, stage, metadata, created_at, updated_at)
 SELECT
-    empresa_id,
+    empresa_id::uuid,
     phone,
     NULLIF(push_name, ''),
     CASE
@@ -103,6 +103,7 @@ SELECT
     COALESCE(created_at, CURRENT_TIMESTAMP),
     COALESCE(updated_at, CURRENT_TIMESTAMP)
 FROM leads
+WHERE empresa_id IN (SELECT id::text FROM tenants)
 ON CONFLICT (tenant_id, phone) DO NOTHING;
 
 -- 6. Link leads to conversations
@@ -122,23 +123,30 @@ ON CONFLICT (username) DO NOTHING;
 INSERT INTO consumption_logs (tenant_id, model, input_tokens, output_tokens, cost, operation, created_at)
 SELECT
     empresa_id,
-    model,
-    input_tokens,
-    output_tokens,
-    custo,
-    'chat',
+    modelo,
+    tokens_entrada,
+    tokens_saida,
+    custo_estimado,
+    tipo_operacao,
     created_at
 FROM logs_consumo;
 
--- 9. Migrar failed_responses -> message_queue
-INSERT INTO message_queue (tenant_id, whatsapp_account_id, phone, content, queue_type, status, attempts)
-SELECT
-    wa.tenant_id,
-    wa.id,
-    fr.phone,
-    fr.response_text,
-    'failed',
-    CASE WHEN fr.delivered THEN 'delivered' ELSE 'pending' END,
-    fr.attempts
-FROM failed_responses fr
-JOIN whatsapp_accounts wa ON wa.instance_name = fr.instance_name;
+-- 9. Migrar failed_responses -> message_queue (se tabela existir)
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'failed_responses') THEN
+        EXECUTE '
+            INSERT INTO message_queue (tenant_id, whatsapp_account_id, phone, content, queue_type, status, attempts)
+            SELECT
+                wa.tenant_id,
+                wa.id,
+                fr.phone,
+                fr.response_text,
+                ''failed'',
+                CASE WHEN fr.delivered THEN ''delivered'' ELSE ''pending'' END,
+                fr.attempts
+            FROM failed_responses fr
+            JOIN whatsapp_accounts wa ON wa.instance_name = fr.instance_name
+        ';
+    END IF;
+END $$;
