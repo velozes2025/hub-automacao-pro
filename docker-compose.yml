@@ -107,16 +107,17 @@ services:
         condition: service_healthy
 
   # ============================================
-  # Hub Bot - Webhook Multi-Cliente
+  # Hub Bot - Platform Multi-Tenant
   # ============================================
   hub-bot:
-    build: ./bot
+    build: ./app
     container_name: hub-bot
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - EVOLUTION_API_KEY=${EVOLUTION_API_KEY}
       - EVOLUTION_URL=http://evolution:8080
       - DB_HOST=postgres
@@ -124,6 +125,9 @@ services:
       - DB_NAME=${POSTGRES_DB:-hub_database}
       - DB_USER=${POSTGRES_USER:-hub_user}
       - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-claude-sonnet-4-20250514}
+      - MAX_WEBHOOK_WORKERS=${MAX_WEBHOOK_WORKERS:-20}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     networks:
       - hub-network
     depends_on:

@@ -1,0 +1,366 @@
+"""Hub Automacao Pro - Admin Panel with RBAC.
+
+Roles:
+- super_admin: sees all tenants, manages everything
+- admin: sees only their own tenant
+- viewer: read-only access to their tenant
+"""
+
+import os
+import re
+import logging
+from functools import wraps
+from flask import Flask, request, redirect, url_for, render_template, \
+    flash, session, jsonify
+from werkzeug.security import generate_password_hash, check_password_hash
+
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from admin import db as admin_db
+from app.channels import whatsapp
+
+app = Flask(__name__)
+app.secret_key = os.getenv('SECRET_KEY', 'change-me-in-production')
+BOT_WEBHOOK_URL = os.getenv('BOT_INTERNAL_URL', 'http://hub-bot:3000') + '/webhook'
+ADMIN_DEFAULT_PASSWORD = os.getenv('ADMIN_DEFAULT_PASSWORD', 'admin123')
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger('hub-admin')
+
+
+def slugify(text):
+    text = text.lower().strip()
+    text = re.sub(r'[^\w\s-]', '', text)
+    text = re.sub(r'[\s_]+', '-', text)
+    return text[:50]
+
+
+# --- Auth decorators ---
+
+def login_required(f):
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        if not session.get('admin'):
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return wrapped
+
+
+def super_admin_required(f):
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        if not session.get('admin'):
+            return redirect(url_for('login'))
+        if session.get('role') != 'super_admin':
+            flash('Acesso restrito a super admin', 'error')
+            return redirect(url_for('dashboard'))
+        return f(*args, **kwargs)
+    return wrapped
+
+
+def _get_user_tenant_id():
+    """Get the tenant_id for the current user. None for super_admin."""
+    return session.get('tenant_id')
+
+
+def _can_access_tenant(tenant_id):
+    """Check if current user can access a specific tenant."""
+    if session.get('role') == 'super_admin':
+        return True
+    return str(session.get('tenant_id')) == str(tenant_id)
+
+
+def ensure_default_admin():
+    if admin_db.count_admin_users() == 0:
+        admin_db.create_admin_user('admin', generate_password_hash(ADMIN_DEFAULT_PASSWORD))
+        log.info('Default admin created (username: admin)')
+
+
+# --- Auth Routes ---
+
+@app.route('/')
+def index():
+    return redirect(url_for('dashboard'))
+
+
+@app.route('/admin/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        user = admin_db.get_admin_user(request.form.get('username', ''))
+        if user and check_password_hash(user['password_hash'], request.form.get('password', '')):
+            session['admin'] = user['username']
+            session['role'] = user.get('role', 'admin')
+            session['tenant_id'] = str(user['tenant_id']) if user.get('tenant_id') else None
+            return redirect(url_for('dashboard'), code=303)
+        flash('Usuario ou senha incorretos', 'error')
+    return render_template('login.html')
+
+
+@app.route('/admin/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+
+# --- Dashboard ---
+
+@app.route('/admin/dashboard')
+@login_required
+def dashboard():
+    user_tenant = _get_user_tenant_id()
+    tenants = admin_db.list_tenants(tenant_id=user_tenant)
+
+    for t in tenants:
+        accounts = admin_db.list_whatsapp_accounts(str(t['id']))
+        t['accounts'] = accounts
+        m = admin_db.get_messages_today(str(t['id']))
+        t['msgs_today'] = m['total'] if m else 0
+
+    return render_template('dashboard.html',
+                           tenants=tenants,
+                           is_super_admin=session.get('role') == 'super_admin')
+
+
+# --- Tenant Management ---
+
+@app.route('/admin/tenants/new')
+@super_admin_required
+def tenant_new():
+    return render_template('tenant_form.html', tenant=None)
+
+
+@app.route('/admin/tenants', methods=['POST'])
+@super_admin_required
+def tenant_create():
+    name = request.form.get('name', '').strip()
+    if not name:
+        flash('Nome e obrigatorio', 'error')
+        return redirect(url_for('tenant_new'))
+
+    slug = request.form.get('slug', '').strip() or slugify(name)
+    tenant = admin_db.create_tenant(name, slug)
+    if not tenant:
+        flash('Erro ao criar tenant (slug ja existe?)', 'error')
+        return redirect(url_for('tenant_new'))
+
+    # Create default agent config
+    admin_db.upsert_agent_config(
+        tenant_id=str(tenant['id']),
+        system_prompt=request.form.get('system_prompt', ''),
+        model=request.form.get('model', 'claude-sonnet-4-20250514'),
+        max_tokens=int(request.form.get('max_tokens', 150)),
+    )
+
+    flash(f'Tenant "{name}" criado com sucesso!', 'success')
+    return redirect(url_for('tenant_detail', tenant_id=tenant['id']))
+
+
+@app.route('/admin/tenants/<tenant_id>')
+@login_required
+def tenant_detail(tenant_id):
+    if not _can_access_tenant(tenant_id):
+        flash('Acesso negado', 'error')
+        return redirect(url_for('dashboard'))
+
+    tenant = admin_db.get_tenant(tenant_id)
+    if not tenant:
+        flash('Tenant nao encontrado', 'error')
+        return redirect(url_for('dashboard'))
+
+    accounts = admin_db.list_whatsapp_accounts(tenant_id)
+    agent_config = admin_db.get_agent_config(tenant_id)
+    consumption = admin_db.get_consumption(tenant_id)
+
+    return render_template('tenant_detail.html',
+                           tenant=tenant,
+                           accounts=accounts,
+                           agent_config=agent_config,
+                           consumption=consumption)
+
+
+@app.route('/admin/tenants/<tenant_id>/edit')
+@login_required
+def tenant_edit(tenant_id):
+    if not _can_access_tenant(tenant_id):
+        flash('Acesso negado', 'error')
+        return redirect(url_for('dashboard'))
+
+    tenant = admin_db.get_tenant(tenant_id)
+    agent_config = admin_db.get_agent_config(tenant_id)
+    return render_template('tenant_form.html', tenant=tenant, agent_config=agent_config)
+
+
+@app.route('/admin/tenants/<tenant_id>', methods=['POST'])
+@login_required
+def tenant_update(tenant_id):
+    if not _can_access_tenant(tenant_id):
+        flash('Acesso negado', 'error')
+        return redirect(url_for('dashboard'))
+
+    admin_db.update_tenant(tenant_id,
+        name=request.form.get('name', '').strip(),
+    )
+
+    admin_db.upsert_agent_config(
+        tenant_id=tenant_id,
+        system_prompt=request.form.get('system_prompt', ''),
+        model=request.form.get('model', 'claude-sonnet-4-20250514'),
+        max_tokens=int(request.form.get('max_tokens', 150)),
+        max_history_messages=int(request.form.get('max_history_messages', 10)),
+    )
+
+    flash('Configuracoes salvas', 'success')
+    return redirect(url_for('tenant_detail', tenant_id=tenant_id))
+
+
+# --- WhatsApp Account Management ---
+
+@app.route('/admin/tenants/<tenant_id>/accounts/new', methods=['POST'])
+@login_required
+def account_create(tenant_id):
+    if not _can_access_tenant(tenant_id):
+        flash('Acesso negado', 'error')
+        return redirect(url_for('dashboard'))
+
+    instance_name = request.form.get('instance_name', '').strip()
+    if not instance_name:
+        flash('Nome da instancia e obrigatorio', 'error')
+        return redirect(url_for('tenant_detail', tenant_id=tenant_id))
+
+    account = admin_db.create_whatsapp_account(tenant_id, instance_name)
+    if not account:
+        flash('Erro ao criar instancia (ja existe?)', 'error')
+        return redirect(url_for('tenant_detail', tenant_id=tenant_id))
+
+    # Create instance on Evolution API
+    result = whatsapp.create_instance(instance_name)
+    if 'error' not in result:
+        if whatsapp.set_webhook(instance_name, BOT_WEBHOOK_URL):
+            admin_db.set_webhook_configured(str(account['id']), True)
+            flash(f'Instancia "{instance_name}" criada!', 'success')
+        else:
+            flash('Instancia criada mas webhook falhou', 'error')
+    else:
+        flash(f'Erro na Evolution: {result.get("error", "")}', 'error')
+
+    return redirect(url_for('tenant_detail', tenant_id=tenant_id))
+
+
+@app.route('/admin/api/status/<account_id>')
+@login_required
+def api_status(account_id):
+    account = admin_db.get_whatsapp_account(account_id)
+    if not account:
+        return jsonify({'state': 'unknown'})
+
+    if not _can_access_tenant(account.get('tenant_id')):
+        return jsonify({'error': 'forbidden'}), 403
+
+    state = whatsapp.get_connection_state(account['instance_name'])
+    result = {'state': state}
+    if state != 'open':
+        qr = whatsapp.get_qr_code(account['instance_name'])
+        result['qr_base64'] = qr.get('base64', '')
+    return jsonify(result)
+
+
+@app.route('/admin/accounts/<account_id>/connect', methods=['POST'])
+@login_required
+def account_connect(account_id):
+    account = admin_db.get_whatsapp_account(account_id)
+    if not account or not _can_access_tenant(account.get('tenant_id')):
+        flash('Acesso negado', 'error')
+        return redirect(url_for('dashboard'))
+
+    instance = account['instance_name']
+    state = whatsapp.get_connection_state(instance)
+
+    if state in ('error', 'unknown'):
+        whatsapp.create_instance(instance)
+
+    if not account.get('webhook_configured'):
+        if whatsapp.set_webhook(instance, BOT_WEBHOOK_URL):
+            admin_db.set_webhook_configured(account_id, True)
+
+    flash('Instancia reconectada. Escaneie o QR code.', 'success')
+    return redirect(url_for('tenant_detail', tenant_id=account['tenant_id']))
+
+
+@app.route('/admin/accounts/<account_id>/disconnect', methods=['POST'])
+@login_required
+def account_disconnect(account_id):
+    account = admin_db.get_whatsapp_account(account_id)
+    if account and _can_access_tenant(account.get('tenant_id')):
+        whatsapp.logout_instance(account['instance_name'])
+        flash('WhatsApp desconectado', 'success')
+    return redirect(url_for('tenant_detail', tenant_id=account['tenant_id']))
+
+
+@app.route('/admin/accounts/<account_id>/delete', methods=['POST'])
+@login_required
+def account_delete(account_id):
+    account = admin_db.get_whatsapp_account(account_id)
+    if account and _can_access_tenant(account.get('tenant_id')):
+        whatsapp.delete_instance(account['instance_name'])
+        admin_db.deactivate_whatsapp_account(account_id)
+        flash('Instancia desativada', 'success')
+    return redirect(url_for('tenant_detail', tenant_id=account['tenant_id']))
+
+
+# --- Consumption ---
+
+@app.route('/admin/consumption')
+@login_required
+def consumption():
+    user_tenant = _get_user_tenant_id()
+    consumos = admin_db.get_consumption(tenant_id=user_tenant)
+    return render_template('consumption.html', consumos=consumos)
+
+
+# --- Public QR (for clients) ---
+
+@app.route('/qr/<token>')
+def public_qr(token):
+    # Look up account by client_token
+    account = admin_db._query(
+        "SELECT * FROM whatsapp_accounts WHERE client_token = %s",
+        (token,),
+        fetch='one',
+    )
+    if not account:
+        return 'Link invalido', 404
+    return render_template('client_qr.html', account=account, token=token)
+
+
+@app.route('/api/qr/<token>')
+def api_qr(token):
+    account = admin_db._query(
+        "SELECT * FROM whatsapp_accounts WHERE client_token = %s",
+        (token,),
+        fetch='one',
+    )
+    if not account:
+        return jsonify({'error': 'not found'}), 404
+
+    instance = account['instance_name']
+    state = whatsapp.get_connection_state(instance)
+    if state == 'open':
+        return jsonify({'state': 'open'})
+    qr = whatsapp.get_qr_code(instance)
+    return jsonify({'state': state, 'base64': qr.get('base64', '')})
+
+
+# --- Startup ---
+
+if __name__ == '__main__':
+    admin_db.init_pool(
+        host=os.getenv('DB_HOST', 'postgres'),
+        port=int(os.getenv('DB_PORT', '5432')),
+        dbname=os.getenv('DB_NAME', 'hub_database'),
+        user=os.getenv('DB_USER', 'hub_user'),
+        password=os.getenv('DB_PASSWORD', ''),
+    )
+    ensure_default_admin()
+    log.info('Admin Panel started on port 9615')
+    app.run(host='0.0.0.0', port=9615)
