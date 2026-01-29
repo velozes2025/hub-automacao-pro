@@ -158,10 +158,10 @@ def process_message(payload):
                 evolution.send_message(instance_name, send_phone, msg_fora)
             return
 
-        # Indicador de digitacao (so se tem numero real)
-        if send_phone != phone or not is_lid:
+        # Ativar "digitando..." imediatamente
+        can_send = send_phone != phone or not is_lid
+        if can_send:
             evolution.set_typing(instance_name, send_phone, True)
-        time.sleep(empresa.get('typing_delay_ms', 800) / 1000)
 
         db_phone = send_phone
 
@@ -193,7 +193,7 @@ def process_message(payload):
                 f'Pergunte o ramo do negocio e como pode ajudar. So nesta primeira vez.'
             )
 
-        # Chamar Claude
+        # Chamar Claude (digitando continua aparecendo enquanto processa)
         result = claude_client.call_claude(
             system_prompt=base_prompt + ctx,
             messages=history,
@@ -202,6 +202,14 @@ def process_message(payload):
         )
 
         response_text = result['text']
+
+        # Delay proporcional ao tamanho da resposta (simula digitacao real)
+        # Pessoa real digita ~40 chars/seg no WhatsApp
+        if can_send:
+            typing_secs = max(2.0, min(len(response_text) / 40.0, 8.0))
+            # Reenviar "digitando" pra manter o indicador ativo
+            evolution.set_typing(instance_name, send_phone, True)
+            time.sleep(typing_secs)
 
         # Salvar resposta
         db.save_message(empresa_id, db_phone, 'assistant', response_text)
