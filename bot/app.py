@@ -122,22 +122,37 @@ def process_message(payload):
         max_history = empresa.get('max_history_messages', 10)
         history = db.get_conversation_history(empresa_id, db_phone, max_history)
 
-        # Mensagem de boas-vindas na primeira interacao
-        greeting = empresa.get('greeting_message')
-        if greeting and len(history) == 0:
-            evolution.send_message(instance_name, send_phone, greeting)
-            db.save_message(empresa_id, db_phone, 'assistant', greeting)
-            time.sleep(0.5)
-
         # Salvar mensagem do usuario
         db.save_message(empresa_id, db_phone, 'user', text, push_name)
         history.append({'role': 'user', 'content': text})
 
+        # Montar system prompt com contexto do contato
+        base_prompt = empresa.get('system_prompt', '')
+        contact_info = db.get_contact_info(empresa_id, db_phone)
+
+        if contact_info and contact_info['total_msgs'] > 1:
+            nome = contact_info.get('push_name') or push_name or 'desconhecido'
+            total = contact_info['total_msgs']
+            ctx = (
+                f'\n\nCONTEXTO DO CONTATO: '
+                f'Nome: {nome}. Ja trocaram {total} mensagens antes. '
+                f'NAO se apresente de novo. NAO repita quem voce e. '
+                f'Continue a conversa naturalmente como se ja se conhecessem.'
+            )
+        else:
+            nome = push_name or ''
+            ctx = (
+                f'\n\nCONTEXTO DO CONTATO: '
+                f'Primeiro contato{" com " + nome if nome else ""}. '
+                f'Se apresente brevemente (nome + site quantrexnow.io) e pergunte como pode ajudar. '
+                f'Apenas nesta primeira vez.'
+            )
+
         # Chamar Claude
         result = claude_client.call_claude(
-            system_prompt=empresa.get('system_prompt', ''),
+            system_prompt=base_prompt + ctx,
             messages=history,
-            model=empresa.get('model', 'claude-3-haiku-20240307'),
+            model=empresa.get('model', 'claude-opus-4-5-20251101'),
             max_tokens=empresa.get('max_tokens', 150)
         )
 

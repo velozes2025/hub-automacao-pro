@@ -76,6 +76,22 @@ def log_token_usage(empresa_id, model, input_tokens, output_tokens, cost):
     )
 
 
+def get_contact_info(empresa_id, phone):
+    """Retorna info do contato: total de msgs, push_name, primeira interacao."""
+    rows = _query(
+        """SELECT
+               COUNT(*) as total_msgs,
+               MAX(push_name) as push_name,
+               MIN(created_at) as first_seen
+           FROM conversas
+           WHERE empresa_id = %s AND phone = %s AND role = 'user'""",
+        (empresa_id, phone)
+    )
+    if rows and rows[0]['total_msgs'] > 0:
+        return dict(rows[0])
+    return None
+
+
 def get_lid_phone(lid_jid, instance_name):
     rows = _query(
         "SELECT phone FROM lid_phone_map WHERE lid = %s AND instance_name = %s LIMIT 1",
