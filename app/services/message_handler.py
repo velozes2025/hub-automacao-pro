@@ -146,7 +146,7 @@ def _process_incoming(instance_name, data):
         return
 
     push_name = data.get('pushName', '')
-    language = detect_language(text)
+    detected_language = detect_language(text)
 
     # --- Resolve tenant ---
     account = tenants_db.get_whatsapp_account_by_instance(instance_name)
@@ -185,11 +185,38 @@ def _process_incoming(instance_name, data):
     )
     conversation_id = str(conversation['id'])
 
+    # --- Persist language (use stored if exists, update if first detection) ---
+    stored_lang = conversation.get('language')
+    if stored_lang:
+        language = stored_lang
+    else:
+        language = detected_language
+        try:
+            conv_db.update_conversation(conversation_id, language=detected_language)
+        except Exception:
+            pass
+
     # --- Save user message ---
     msg_metadata = {'push_name': push_name, 'source': source}
     if source == 'audio':
         audio_meta = transcriber.get_audio_metadata(data)
         msg_metadata.update(audio_meta)
+        # Log Whisper transcription cost ($0.006/min)
+        duration_sec = audio_meta.get('duration_seconds', 0)
+        if duration_sec <= 0:
+            duration_sec = 5  # Minimum estimate for short voice notes
+        duration_min = duration_sec / 60.0
+        whisper_cost = round(duration_min * 0.006, 6)
+        try:
+            consumption_db.log_usage(
+                tenant_id=tenant_id, model='whisper-1',
+                input_tokens=0, output_tokens=0, cost=whisper_cost,
+                conversation_id=conversation_id, operation='transcription',
+                metadata={'duration_seconds': duration_sec},
+            )
+            log.info(f'[COST] Whisper: {duration_sec}s = ${whisper_cost}')
+        except Exception as e:
+            log.error(f'[COST] Failed to log Whisper cost: {e}')
     conv_db.save_message(conversation_id, 'user', text, msg_metadata)
 
     # --- Auto-save lead ---
@@ -253,6 +280,7 @@ def _process_incoming(instance_name, data):
         agent_config=agent_config,
         language=language,
         api_key=api_key,
+        source=source,
     )
 
     response_text = result['text']
@@ -279,6 +307,24 @@ def _process_incoming(instance_name, data):
         metadata={'tool_calls': len(result.get('tool_calls', []))},
     )
 
+    # --- Extract voice persona config (with sensible defaults) ---
+    persona = agent_config.get('persona', {})
+    if isinstance(persona, str):
+        import json as _json
+        persona = _json.loads(persona) if persona else {}
+    voice_config = persona.get('voice')
+
+    # If persona has gender but no voice config, create a default
+    if not voice_config and persona.get('gender'):
+        gender = persona.get('gender', 'male')
+        voice_config = {
+            'enabled': True,
+            'tts_voice': 'onyx' if gender == 'male' else 'nova',
+            'speed': 1.0,
+            'default_language': language,
+        }
+        log.info(f'[VOICE] Created default voice config: {voice_config["tts_voice"]} for {gender}')
+
     # --- Send response ---
     if lid_unresolved:
         queue_db.enqueue(
@@ -296,16 +342,57 @@ def _process_incoming(instance_name, data):
             _deliver_pending_lid_responses(account, instance_name, phone, resolved_late)
         return
 
-    # Send with split + retry
-    sent = sender.send_split_messages(
-        instance_name, send_phone, response_text,
-        tenant_id=tenant_id,
-        whatsapp_account_id=account_id,
-        metadata={'push_name': push_name},
-    )
+    # Adjust TTS speed based on detected sentiment for more natural delivery
+    if source == 'audio' and voice_config:
+        _sentiment_speeds = {
+            'frustrated': 0.85,   # Slow = empathetic, calm
+            'happy': 1.1,         # Slightly faster = energetic
+            'confused': 0.9,      # Slow = patient, clear
+            'urgent': 1.15,       # Fast = direct, efficient
+            'neutral': 1.0,
+        }
+        sentiment = result.get('sentiment', 'neutral')
+        # Only override if no custom speed was set by tenant
+        if voice_config.get('speed', 1.0) == 1.0:
+            voice_config['speed'] = _sentiment_speeds.get(sentiment, 1.0)
+
+    # Send response — audio reply if input was audio AND voice persona configured
+    reply_type = 'text'
+    if source == 'audio' and voice_config:
+        sent = sender.send_audio_response(
+            instance_name, send_phone, response_text,
+            voice_config=voice_config,
+            conversation_id=conversation_id,
+            tenant_id=tenant_id,
+            whatsapp_account_id=account_id,
+            metadata={'push_name': push_name},
+        )
+        reply_type = 'audio'
+        # Log TTS cost ($0.030 per 1K chars for tts-1-hd)
+        tts_chars = len(response_text)
+        tts_cost = round((tts_chars / 1000.0) * 0.030, 6)
+        try:
+            consumption_db.log_usage(
+                tenant_id=tenant_id, model='tts-1-hd',
+                input_tokens=tts_chars, output_tokens=0, cost=tts_cost,
+                conversation_id=conversation_id, operation='tts',
+                metadata={'voice': voice_config.get('tts_voice', ''), 'chars': tts_chars},
+            )
+            log.info(f'[COST] TTS: {tts_chars} chars = ${tts_cost}')
+        except Exception as e:
+            log.error(f'[COST] Failed to log TTS cost: {e}')
+    else:
+        if source == 'audio' and not voice_config:
+            log.info(f'[{instance_name}] Audio input but no voice persona configured — replying as text')
+        sent = sender.send_split_messages(
+            instance_name, send_phone, response_text,
+            tenant_id=tenant_id,
+            whatsapp_account_id=account_id,
+            metadata={'push_name': push_name},
+        )
 
     if sent:
-        log.info(f'[{instance_name}] {send_phone}: "{text[:40]}" -> "{response_text[:40]}"')
+        log.info(f'[{instance_name}] {send_phone}: "{text[:40]}" -> [{reply_type}] "{response_text[:40]}"')
     else:
         log.warning(f'[{instance_name}] Send failed, queued for retry: {send_phone}')
 
@@ -313,7 +400,8 @@ def _process_incoming(instance_name, data):
 def _deliver_pending_lid_responses(account, instance_name, lid_jid, phone):
     """Deliver pending LID responses now that LID is resolved."""
     try:
-        pending = queue_db.get_pending(queue_type='pending_lid')
+        tenant_id = str(account['tenant_id'])
+        pending = queue_db.get_pending(queue_type='pending_lid', tenant_id=tenant_id)
         matched = [p for p in pending if p.get('metadata', {}).get('lid_jid') == lid_jid]
         if not matched:
             return
@@ -354,9 +442,9 @@ def _deliver_pending_lid_responses(account, instance_name, lid_jid, phone):
             time.sleep(2.0)
             whatsapp.send_message(instance_name, phone, matched[-1]['content'])
 
-        # Mark all as delivered
+        # Mark all as delivered (tenant-scoped)
         for m in matched:
-            queue_db.mark_delivered(m['id'])
+            queue_db.mark_delivered(m['id'], tenant_id=tenant_id)
         log.info(f'Delivered {len(matched)} pending LID responses to {phone}')
 
     except Exception as e:

@@ -16,7 +16,7 @@ import logging
 from app.config import config
 from app.ai.client import call_api, estimate_cost
 from app.ai.tools import execute_tool, get_tool_definitions
-from app.ai.prompts import build_system_prompt
+from app.ai.prompts import build_system_prompt, detect_sentiment
 
 log = logging.getLogger('ai.supervisor')
 
@@ -28,7 +28,7 @@ FALLBACK_RESPONSES = {
 _fallback_idx = 0
 
 
-def process(conversation, agent_config, language='pt', api_key=None):
+def process(conversation, agent_config, language='pt', api_key=None, source='text'):
     """Run the supervisor loop and return the AI response.
 
     Args:
@@ -36,6 +36,7 @@ def process(conversation, agent_config, language='pt', api_key=None):
         agent_config: dict with system_prompt, model, max_tokens, persona, tools_enabled, etc.
         language: detected language code
         api_key: optional per-tenant API key override
+        source: 'text' or 'audio' — when 'audio', response is optimized for speech
 
     Returns:
         dict with: text, input_tokens, output_tokens, model, cost, tool_calls
@@ -49,9 +50,21 @@ def process(conversation, agent_config, language='pt', api_key=None):
     max_tokens = agent_config.get('max_tokens', config.DEFAULT_MAX_TOKENS)
     max_history = agent_config.get('max_history_messages', config.DEFAULT_MAX_HISTORY)
 
+    # Detect user sentiment from latest message
+    last_user_msg = ''
+    for msg in reversed(conversation.get('messages', [])):
+        if msg.get('role') == 'user' and msg.get('content'):
+            last_user_msg = msg['content']
+            break
+    sentiment = detect_sentiment(last_user_msg) if last_user_msg else 'neutral'
+    if source == 'audio':
+        log.info(f'[SENTIMENT] Detected: {sentiment} from: "{last_user_msg[:60]}"')
+
     # Build system prompt
     lead = conversation.get('lead')
-    system_prompt = build_system_prompt(agent_config, conversation, lead, language)
+    system_prompt = build_system_prompt(agent_config, conversation, lead, language,
+                                        spoken_mode=(source == 'audio'),
+                                        sentiment=sentiment)
 
     # Prepare message history (last N messages)
     raw_messages = conversation.get('messages', [])
@@ -147,6 +160,7 @@ def process(conversation, agent_config, language='pt', api_key=None):
             'model': model,
             'cost': estimate_cost(model, total_input, total_output),
             'tool_calls': tool_calls,
+            'sentiment': sentiment,
         }
 
     except Exception as e:
@@ -161,4 +175,5 @@ def process(conversation, agent_config, language='pt', api_key=None):
             'model': model,
             'cost': estimate_cost(model, total_input, total_output),
             'tool_calls': tool_calls,
+            'sentiment': sentiment,
         }
