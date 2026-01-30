@@ -34,7 +34,7 @@ class Config:
     LID_RESOLVE_INTERVAL_SECONDS = 30
 
     # --- Message ---
-    MSG_SPLIT_MAX_CHARS = 200
+    MSG_SPLIT_MAX_CHARS = 800  # WhatsApp handles up to 65K; 800 = ~1 natural paragraph
     TYPING_DELAY_PER_CHAR_MS = 20
     TYPING_MIN_MS = 800
     TYPING_MAX_MS = 3000

@@ -246,6 +246,11 @@ def _process_incoming(instance_name, data):
                 whatsapp.send_message(instance_name, send_phone, outside_msg)
         return
 
+    # --- Human-like read delay (people read the message before typing) ---
+    import random
+    read_delay = random.uniform(1.5, 3.5)
+    time.sleep(read_delay)
+
     # --- Typing indicator ---
     can_send = not lid_unresolved
     if can_send:
@@ -320,11 +325,13 @@ def _process_incoming(instance_name, data):
         gender = persona.get('gender', 'male')
         voice_config = {
             'enabled': True,
-            'tts_voice': 'onyx' if gender == 'male' else 'nova',
+            'tts_voice': 'ash' if gender == 'male' else 'nova',
             'speed': 1.0,
             'default_language': language,
         }
         log.info(f'[VOICE] Created default voice config: {voice_config["tts_voice"]} for {gender}')
+
+    sentiment = result.get('sentiment', 'neutral')
 
     # --- Send response ---
     if lid_unresolved:
@@ -352,7 +359,6 @@ def _process_incoming(instance_name, data):
             'urgent': 1.15,       # Fast = direct, efficient
             'neutral': 1.0,
         }
-        sentiment = result.get('sentiment', 'neutral')
         # Only override if no custom speed was set by tenant
         if voice_config.get('speed', 1.0) == 1.0:
             voice_config['speed'] = _sentiment_speeds.get(sentiment, 1.0)
@@ -367,19 +373,23 @@ def _process_incoming(instance_name, data):
             tenant_id=tenant_id,
             whatsapp_account_id=account_id,
             metadata={'push_name': push_name},
+            sentiment=sentiment,
+            persona=persona,
         )
         reply_type = 'audio'
-        # Log TTS cost ($0.030 per 1K chars for tts-1-hd)
+        # Log TTS cost ($0.015 per 1K chars for gpt-4o-mini-tts)
+        from app.channels.transcriber import TTS_MODEL, TTS_COST_PER_1K_CHARS
         tts_chars = len(response_text)
-        tts_cost = round((tts_chars / 1000.0) * 0.030, 6)
+        tts_cost = round((tts_chars / 1000.0) * TTS_COST_PER_1K_CHARS, 6)
         try:
             consumption_db.log_usage(
-                tenant_id=tenant_id, model='tts-1-hd',
+                tenant_id=tenant_id, model=TTS_MODEL,
                 input_tokens=tts_chars, output_tokens=0, cost=tts_cost,
                 conversation_id=conversation_id, operation='tts',
-                metadata={'voice': voice_config.get('tts_voice', ''), 'chars': tts_chars},
+                metadata={'voice': voice_config.get('tts_voice', ''), 'chars': tts_chars,
+                          'sentiment': sentiment},
             )
-            log.info(f'[COST] TTS: {tts_chars} chars = ${tts_cost}')
+            log.info(f'[COST] TTS ({TTS_MODEL}): {tts_chars} chars = ${tts_cost}')
         except Exception as e:
             log.error(f'[COST] Failed to log TTS cost: {e}')
     else:

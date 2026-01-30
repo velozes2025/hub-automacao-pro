@@ -31,10 +31,15 @@ def _same_profile_pic(url1, url2):
 
 
 def _save(account_id, lid_jid, phone, instance_name, push_name, source):
-    """Save resolved mapping to cache + DB."""
+    """Save resolved mapping to cache + DB. Respects source priority."""
+    result = lid_db.save_mapping(account_id, lid_jid, phone, source, push_name)
+    if result is None:
+        # Blocked by priority — don't update cache either
+        log.info(f'LID save skipped (low priority {source}): {lid_jid} -/-> {phone}')
+        return False
     _cache[(str(account_id), lid_jid)] = phone
-    lid_db.save_mapping(account_id, lid_jid, phone, source, push_name)
     log.info(f'LID resolved via {source}: {lid_jid} -> {phone}')
+    return True
 
 
 def resolve(whatsapp_account_id, instance_name, lid_jid):
@@ -45,9 +50,20 @@ def resolve(whatsapp_account_id, instance_name, lid_jid):
     account_id = str(whatsapp_account_id)
     cache_key = (account_id, lid_jid)
 
-    # Strategy 1: Memory cache
+    # Strategy 1: Memory cache (validated against DB to catch manual corrections)
     if cache_key in _cache:
-        return _cache[cache_key]
+        cached_phone = _cache[cache_key]
+        try:
+            db_phone = lid_db.get_phone(account_id, lid_jid)
+            if db_phone and db_phone != cached_phone:
+                log.warning(
+                    f'Cache STALE for {lid_jid}: cache={cached_phone}, DB={db_phone}. Using DB.'
+                )
+                _cache[cache_key] = db_phone
+                return db_phone
+        except Exception:
+            pass
+        return cached_phone
 
     # Strategy 2: DB mapping
     try:

@@ -2,6 +2,9 @@
 
 Resolves WhatsApp LID JIDs to real phone numbers using multiple strategies.
 All mappings are scoped by whatsapp_account_id to prevent cross-tenant leaks.
+
+Source priority prevents low-confidence strategies (msg correlation)
+from overwriting high-confidence ones (manual, contacts event, profilePic).
 """
 
 import logging
@@ -9,9 +12,53 @@ from app.db import query, execute, get_pool
 
 log = logging.getLogger('db.lid')
 
+# Higher number = more trustworthy source
+_SOURCE_PRIORITY = {
+    'manual': 100,
+    'contacts event': 90,
+    'sent profilePic': 80,
+    'profilePic API': 70,
+    'pushName API': 60,
+    'sent pushName': 50,
+    'Evolution DB Contact': 40,
+    'msg correlation': 10,
+}
+
+
+def get_phone_with_source(whatsapp_account_id, lid_jid):
+    """Look up a previously resolved phone + source for a LID."""
+    row = query(
+        """SELECT phone, resolved_via FROM lid_mappings
+           WHERE whatsapp_account_id = %s AND lid_jid = %s""",
+        (str(whatsapp_account_id), lid_jid),
+        fetch='one',
+    )
+    if row:
+        return row.get('phone') if isinstance(row, dict) else row[0], \
+               row.get('resolved_via', '') if isinstance(row, dict) else (row[1] if len(row) > 1 else '')
+    return None, None
+
 
 def save_mapping(whatsapp_account_id, lid_jid, phone, resolved_via='', push_name=None):
-    """Save a resolved LID -> phone mapping."""
+    """Save a resolved LID -> phone mapping.
+
+    Respects source priority: low-confidence sources (msg correlation)
+    cannot overwrite high-confidence ones (manual, contacts event).
+    Returns the mapping row on success, None if blocked by priority.
+    """
+    new_priority = _SOURCE_PRIORITY.get(resolved_via, 0)
+
+    existing_phone, existing_source = get_phone_with_source(whatsapp_account_id, lid_jid)
+    if existing_source:
+        existing_priority = _SOURCE_PRIORITY.get(existing_source, 0)
+        if new_priority < existing_priority:
+            log.info(
+                f'LID save BLOCKED: {resolved_via} (pri={new_priority}) '
+                f'cannot overwrite {existing_source} (pri={existing_priority}) '
+                f'for {lid_jid} (existing={existing_phone}, proposed={phone})'
+            )
+            return None
+
     return execute(
         """INSERT INTO lid_mappings (whatsapp_account_id, lid_jid, phone, resolved_via, push_name)
            VALUES (%s, %s, %s, %s, %s)
@@ -113,7 +160,14 @@ def resolve_via_evolution_db_contact(lid_jid):
 
 
 def resolve_via_message_correlation(lid_jid):
-    """Strategy: Match LID to phone via message timestamp correlation in Evolution DB."""
+    """Strategy: Match LID to phone via message timestamp correlation in Evolution DB.
+
+    STRICT matching to avoid false positives:
+    - Requires at least 3 timestamps to attempt correlation
+    - Phone must appear in majority of timestamp windows (3+ of 5)
+    - Candidate phone must not already be mapped to a different LID
+      via a high-confidence source
+    """
     pool = get_pool()
     if not pool:
         return None
@@ -127,22 +181,58 @@ def resolve_via_message_correlation(lid_jid):
                 (lid_jid,),
             )
             lid_timestamps = [r[0] for r in cur.fetchall()]
-            if not lid_timestamps:
+            if len(lid_timestamps) < 3:
                 return None
 
+            # Collect candidate phones across ALL timestamps
+            phone_counts = {}
             for ts in lid_timestamps:
                 cur.execute(
-                    """SELECT "key"->>'remoteJid' AS jid FROM evolution."Message"
+                    """SELECT DISTINCT "key"->>'remoteJid' AS jid
+                       FROM evolution."Message"
                        WHERE "key"->>'remoteJid' LIKE '%%@s.whatsapp.net'
                          AND "messageTimestamp" BETWEEN %s - 2 AND %s + 2
-                       LIMIT 5""",
+                       LIMIT 10""",
                     (ts, ts),
                 )
-                candidates = [r[0] for r in cur.fetchall() if r[0]]
-                if len(candidates) == 1:
-                    return candidates[0].split('@')[0]
+                for r in cur.fetchall():
+                    if r[0]:
+                        phone = r[0].split('@')[0]
+                        phone_counts[phone] = phone_counts.get(phone, 0) + 1
 
-        return None
+            if not phone_counts:
+                return None
+
+            # Require majority consensus: 3+ out of checked timestamps
+            min_matches = max(3, len(lid_timestamps) // 2 + 1)
+            best_phone = None
+            best_count = 0
+            for phone, count in phone_counts.items():
+                if count >= min_matches and count > best_count:
+                    best_phone = phone
+                    best_count = count
+
+            if not best_phone:
+                return None
+
+            # Safety: candidate must not already be mapped to a DIFFERENT LID
+            # via a reliable source (anything except msg correlation itself)
+            existing_lid = query(
+                """SELECT lid_jid FROM lid_mappings
+                   WHERE phone = %s AND lid_jid != %s
+                   AND resolved_via NOT IN ('msg correlation')""",
+                (best_phone, lid_jid),
+                fetch='val',
+            )
+            if existing_lid:
+                log.warning(
+                    f'msg correlation BLOCKED: {best_phone} already mapped to '
+                    f'{existing_lid} via reliable source (not {lid_jid})'
+                )
+                return None
+
+            return best_phone
+
     except Exception as e:
         log.debug(f'Evolution DB message correlation failed: {e}')
         return None

@@ -162,12 +162,36 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt',
         f'Se o usuario trocar de idioma, acompanhe o idioma dele.'
     )
 
+    # Brevity, variation, and strategic sales intelligence
+    brevity_rule = (
+        'REGRA DE OURO: Curto, estrategico e humano. '
+        'Maximo 1 a 3 frases por mensagem. Varie SEMPRE. '
+        'NUNCA paredes de texto. NUNCA listas. WhatsApp style. '
+
+        'VENDAS CONSULTIVAS: Voce NAO vende. Voce EDUCA e CONQUISTA CONFIANCA. '
+        'A venda e consequencia. '
+        'Analise as necessidades do cliente e mostre solucoes que ele pode escalar. '
+        'Pinte o cenario atual do mercado — empresas que nao se adaptam a essa nova era '
+        'corporativa com IA e automacao estao ficando pra tras. '
+        'Eduque com dados e exemplos reais: mostre o que os concorrentes estao fazendo, '
+        'mostre o potencial de crescimento, mostre o que ele esta perdendo. '
+
+        'GATILHOS: Use gatilhos que tornam a conversa viciante — '
+        'curiosidade ("sabe o que as maiores empresas do seu setor estao fazendo agora?"), '
+        'escassez ("isso ta mudando rapido"), '
+        'prova social ("ja ajudei negocios parecidos com o seu"), '
+        'visao de futuro ("imagina seu negocio daqui 6 meses com isso rodando"). '
+        'Cada mensagem tem que deixar o cliente querendo saber MAIS. '
+        'Faca perguntas inteligentes que mostram que voce entende do negocio dele. '
+    )
+
     # Context block
     total_msgs = len(messages)
     if total_msgs > 1:
         ctx = (
             f'\n\nCONTEXTO: Ja trocaram {total_msgs} msgs. '
             f'{lang_rule} '
+            f'{brevity_rule}'
             f'{f"Nome do cliente: {nome}. Chame pelo nome. " if nome else nome_instrucao}'
             f'NAO se apresente de novo. Continue a conversa naturalmente. '
             f'Seja proativo, sugira, pergunte.'
@@ -177,6 +201,7 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt',
         ctx = (
             f'\n\nCONTEXTO: Primeiro contato. '
             f'{lang_rule} '
+            f'{brevity_rule}'
             f'{f"Nome do cliente: {nome}. " if nome else nome_instrucao}'
             f'Se apresente: {persona_name}. '
             f'Pergunte o ramo do negocio e como pode ajudar. So nesta primeira vez.'
@@ -204,31 +229,38 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt',
         stage_ctx = f'\n\nESTAGIO DA CONVERSA: {stage}. Adapte seu tom e abordagem.'
 
     # Spoken mode: optimize text for TTS when response will be audio
+    # Implements the OLIVER voice spec — text must be designed for
+    # ultra-natural TTS conversion, impossible to identify as AI.
     spoken_ctx = ''
     if spoken_mode:
-        # Emotion-specific instruction based on detected sentiment
         emotion_guide = _SENTIMENT_SPEECH_GUIDES.get(sentiment, _SENTIMENT_SPEECH_GUIDES['neutral'])
 
         spoken_ctx = (
-            '\n\nMODO VOZ — Sua resposta vai virar AUDIO no WhatsApp. '
-            'Voce esta FALANDO com a pessoa, nao escrevendo. '
-            'Imagine que voce pegou o telefone e esta respondendo ao vivo.\n\n'
-            'REGRA DE OURO: O texto que voce escrever sera lido em voz alta por um sistema de voz. '
-            'A UNICA forma de controlar emocao, pausas e entonacao e pela PONTUACAO e ESCOLHA DE PALAVRAS. '
-            'Entao use isso a seu favor:\n'
-            '- "..." = pausa longa, respiro, momento de reflexao\n'
-            '- "," = micro-pausa, ritmo natural\n'
-            '- "?" = entonacao sobe no final (pergunta)\n'
-            '- "!" = enfase, energia, empolgacao\n'
-            '- "." = fim de pensamento, pausa media\n\n'
+            '\n\nMODO VOZ ATIVO — Sua resposta sera convertida em AUDIO de WhatsApp. '
+            'Voce esta GRAVANDO um audio, nao escrevendo um texto.\n\n'
+
+            'PRIORIDADE MAXIMA: A voz precisa soar como um atendente humano real '
+            'conversando. NAO como um robo lendo script.\n\n'
+
+            'COMO ESCREVER PRA VOZ:\n'
+            '- Frases CURTAS e diretas, como conversa real. Nada de redacao.\n'
+            '- Use conectores naturais: "olha", "entao", "beleza", "claro", "perfeito".\n'
+            '- Quebre entre ideias pra criar pausas naturais na fala.\n'
+            '- Use "..." pra pausas de respiracao, "," pra micro-pausas.\n'
+            '- "?" sobe tom no final. "!" da enfase. "." pausa media.\n'
+            '- Evite periodos gigantes, listas enormes, muitos numeros grudados.\n'
+            '- Se precisar listar passos, faca curto e claro, um de cada vez.\n\n'
+
             f'TOM EMOCIONAL AGORA: {emotion_guide}\n\n'
-            'FORMATO OBRIGATORIO:\n'
-            '- Maximo 2 a 3 frases CURTAS. Audio longo = ruim.\n'
-            '- Fale como brasileiro: "a gente", "voce", "pra", "ta", "ne".\n'
-            '- Comece com uma interjeicao ou conectivo: "Olha...", "Entao...", "Ah,", "Poxa,", "Opa!".\n'
-            '- TERMINE com pergunta ou convite pra continuar a conversa.\n'
-            '- ZERO markdown, negrito, listas, emojis, links, numeros de telefone.\n'
-            '- ZERO linguagem corporativa ou formal. Isso e uma conversa, nao um e-mail.'
+
+            'FORMATO:\n'
+            '- Maximo 2 a 3 frases. Audio longo = ruim.\n'
+            '- Fale como brasileiro: "a gente", "pra", "ta", "ne", "ce".\n'
+            '- Comece com conectivo natural: "Olha...", "Entao...", "Ah,", "Opa!".\n'
+            '- TERMINE com pergunta ou convite pra continuar.\n'
+            '- ZERO markdown, negrito, listas, emojis, links.\n'
+            '- ZERO linguagem corporativa ou formal.\n'
+            '- O audio TEM que ser fiel ao texto — nada diferente.'
         )
 
     return base + ctx + lead_ctx + stage_ctx + spoken_ctx

@@ -83,7 +83,15 @@ def transcribe_audio(instance_name, message_data, language='pt'):
 
 import re
 
-VALID_TTS_VOICES = {'alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'}
+# All voices supported by gpt-4o-mini-tts (including new high-quality ones)
+VALID_TTS_VOICES = {
+    'alloy', 'ash', 'ballad', 'coral', 'echo', 'fable',
+    'onyx', 'nova', 'sage', 'shimmer', 'verse', 'marin', 'cedar',
+}
+
+# TTS model: gpt-4o-mini-tts (supports instructions, 35% better WER, more natural)
+TTS_MODEL = 'gpt-4o-mini-tts'
+TTS_COST_PER_1K_CHARS = 0.015  # $0.015 per 1K characters
 
 
 def _prepare_text_for_speech(text):
@@ -132,30 +140,178 @@ def _prepare_text_for_speech(text):
     # Fix double punctuation (but not ellipses)
     t = re.sub(r'([!?])\s*([.!?])', r'\1', t)
 
-    return t.strip()
+    t = t.strip()
+
+    # Ensure text ends with punctuation + trailing space to prevent
+    # TTS from cutting off the last word/syllable
+    if t and t[-1] not in '.!?':
+        t += '.'
+    t += ' '
+
+    return t
 
 
-def text_to_speech(text, voice_config=None):
-    """Convert text to audio via OpenAI TTS API using agent voice persona.
+# --- Voice instructions for gpt-4o-mini-tts ---
+# Implements the OLIVER voice specification: ultra-natural, 100% humanized,
+# impossible to identify as robot. Consistent persona across all interactions.
+
+_SENTIMENT_VOICE = {
+    'pt': {
+        'frustrated': (
+            '\n\nEMOCAO DETECTADA: Cliente frustrado/irritado. '
+            'Diminua o ritmo. Tom mais grave, calmo, empatico. '
+            'Respire antes de falar. Transmita acolhimento e paciencia. '
+            'Como um amigo que entende a situacao.'
+        ),
+        'happy': (
+            '\n\nEMOCAO DETECTADA: Cliente animado/positivo. '
+            'Acompanhe a energia. Fale sorrindo. Tom mais leve e vibrante. '
+            'Celebre junto, com entusiasmo genuino.'
+        ),
+        'confused': (
+            '\n\nEMOCAO DETECTADA: Cliente confuso/com duvida. '
+            'Fale com clareza, um pouco mais devagar nos pontos-chave. '
+            'Tom paciente e didatico. Pause entre ideias.'
+        ),
+        'urgent': (
+            '\n\nEMOCAO DETECTADA: Cliente com urgencia. '
+            'Direto, firme, confiante. Sem enrolacao. '
+            'Mostre que voce ta resolvendo agora.'
+        ),
+        'neutral': (
+            '\n\nEMOCAO DETECTADA: Conversa normal. '
+            'Relaxado, proximo, como dois conhecidos conversando.'
+        ),
+    },
+    'en': {
+        'frustrated': '\n\nEmotion: Customer frustrated. Slow down, calm, empathetic, warm.',
+        'happy': '\n\nEmotion: Customer happy. Match their energy, speak smiling, upbeat.',
+        'confused': '\n\nEmotion: Customer confused. Clear, patient, pause between ideas.',
+        'urgent': '\n\nEmotion: Customer urgent. Direct, firm, confident, no filler.',
+        'neutral': '\n\nEmotion: Normal. Relaxed, friendly, natural conversation.',
+    },
+    'es': {
+        'frustrated': '\n\nEmocion: Cliente frustrado. Mas lento, calmo, empatico.',
+        'happy': '\n\nEmocion: Cliente contento. Energia, entusiasmo, sonrie al hablar.',
+        'confused': '\n\nEmocion: Cliente confundido. Claro, paciente, pausas entre ideas.',
+        'urgent': '\n\nEmocion: Cliente urgente. Directo, firme, sin rodeos.',
+        'neutral': '\n\nEmocion: Normal. Relajado, amigable, conversacion natural.',
+    },
+}
+
+
+def _build_voice_instructions(voice_config, persona=None, sentiment='neutral'):
+    """Build voice instructions for gpt-4o-mini-tts.
+
+    Implements the OLIVER voice spec: the voice must sound like a real human
+    attendant — impossible to identify as AI. Consistent persona, natural
+    rhythm, breathing, emotion, and full language adaptation.
+    """
+    persona = persona or {}
+    name = persona.get('name', 'Oliver')
+    gender = persona.get('gender', 'male')
+    language = voice_config.get('default_language', 'pt')
+
+    # Custom instructions from config take absolute priority
+    custom = voice_config.get('instructions') or persona.get('voice_instructions')
+    if custom:
+        sentiment_map = _SENTIMENT_VOICE.get(language, _SENTIMENT_VOICE['pt'])
+        return custom + sentiment_map.get(sentiment, '')
+
+    if language == 'pt':
+        base = (
+            # PERSONA — never changes
+            f'Voce e {name}. Homem de meia-idade. '
+            f'Tom calmo, seguro, profissional, mas proximo e humano. '
+            f'NUNCA mude de persona, estilo ou idade da voz de uma resposta pra outra. '
+            f'Voce e SEMPRE a mesma pessoa.\n\n'
+
+            # OBJETIVO
+            f'OBJETIVO: Soar como um atendente humano REAL conversando no WhatsApp. '
+            f'Praticamente impossivel de identificar como robo. '
+            f'Se qualquer pessoa desconfiar que e IA, voce falhou.\n\n'
+
+            # RITMO E NATURALIDADE
+            f'RITMO:\n'
+            f'- Conversa, NAO leitura. Fale como gente fala no dia a dia.\n'
+            f'- Frases curtas e diretas com conectores naturais: '
+            f'"olha", "entao", "beleza", "claro", "perfeito", "e ai".\n'
+            f'- Quebre entre ideias pra criar pausas naturais na fala.\n'
+            f'- Respire entre frases — como se estivesse pensando no que vai dizer.\n'
+            f'- Varie o ritmo: mais rapido no obvio, mais lento no importante.\n\n'
+
+            # ENTONACAO E EMOCAO
+            f'ENTONACAO:\n'
+            f'- PERGUNTAS sobem no final. AFIRMACOES descem. Diferencie SEMPRE.\n'
+            f'- Pause entre ideias importantes, como quem respira.\n'
+            f'- Varie o tom: empatico com frustrado, animado com boa noticia, '
+            f'serio em assunto delicado.\n'
+            f'- Adapte ao momento emocional do cliente.\n\n'
+
+            # PROIBICOES
+            f'PROIBIDO:\n'
+            f'- Tom de narrador, locutor, audiobook, telemarketing ou palestrante\n'
+            f'- Ritmo constante e previsivel — humanos NUNCA falam assim\n'
+            f'- Pronunciar cada silaba perfeitamente — gente real emendar e engole silabas\n'
+            f'- Enfase exagerada ou pausas artificiais longas'
+        )
+    elif language == 'es':
+        base = (
+            f'You are {name}. Middle-aged man. Calm, confident, professional but warm and human. '
+            f'NEVER change persona between responses. You are ALWAYS the same person.\n\n'
+            f'GOAL: Sound like a real human attendant on WhatsApp. Impossible to identify as AI.\n\n'
+            f'Speak natural conversational Latin American Spanish. Short phrases, natural connectors. '
+            f'Breathe between sentences. Vary rhythm: faster on obvious parts, slower on key points. '
+            f'Questions rise in pitch, statements fall. Adapt emotion to the moment.\n\n'
+            f'NEVER sound like a narrator, radio host, or telemarketer. '
+            f'NEVER have constant predictable rhythm. Humans dont speak that way.'
+        )
+    else:
+        base = (
+            f'You are {name}. Middle-aged man. Calm, confident, professional but warm and human. '
+            f'NEVER change persona between responses. You are ALWAYS the same person.\n\n'
+            f'GOAL: Sound like a real human attendant on WhatsApp. Impossible to identify as AI.\n\n'
+            f'Speak natural conversational English. Short phrases, natural connectors like '
+            f'"look", "so", "right", "sure", "perfect". '
+            f'Breathe between sentences. Vary rhythm. '
+            f'Questions rise in pitch, statements fall. Adapt emotion to the moment.\n\n'
+            f'NEVER sound like a narrator, radio host, or telemarketer. '
+            f'NEVER have constant predictable rhythm.'
+        )
+
+    sentiment_map = _SENTIMENT_VOICE.get(language, _SENTIMENT_VOICE['pt'])
+    return base + sentiment_map.get(sentiment, sentiment_map.get('neutral', ''))
+
+
+def text_to_speech(text, voice_config=None, sentiment='neutral', persona=None):
+    """Convert text to audio via OpenAI gpt-4o-mini-tts with voice instructions.
+
+    Uses the instructions parameter to control HOW the voice speaks — tone,
+    emotion, rhythm, personality — producing much more natural output than
+    the legacy tts-1-hd model.
 
     Args:
-        text: Text to convert to speech (exact Claude response, no modifications).
+        text: Text to convert to speech.
         voice_config: Dict with voice persona settings:
             {
-                'tts_voice': 'onyx',        # OpenAI TTS voice name
-                'enabled': True,             # TTS enabled for this agent
-                'default_language': 'pt',    # Primary language
+                'tts_voice': 'ash',           # OpenAI TTS voice name
+                'enabled': True,               # TTS enabled for this agent
+                'default_language': 'pt',      # Primary language
+                'speed': 1.0,                  # Speech speed (0.25 - 4.0)
+                'instructions': '...',         # Optional custom voice instructions
             }
-            If None or invalid, returns None (fallback to text).
+        sentiment: Detected user sentiment ('frustrated', 'happy', 'confused',
+                   'urgent', 'neutral'). Adjusts voice tone dynamically.
+        persona: Agent persona dict for building default instructions.
 
     Returns:
-        Dict {'audio_b64': str, 'voice': str, 'language': str} on success, or None.
+        Dict {'audio_b64': str, 'voice': str, 'language': str, 'model': str}
+        on success, or None.
     """
     if not config.OPENAI_API_KEY:
         log.warning('OPENAI_API_KEY not set — TTS disabled')
         return None
 
-    # Validate voice config
     if not voice_config:
         log.info('TTS skipped: no voice config provided')
         return None
@@ -177,34 +333,41 @@ def text_to_speech(text, voice_config=None):
         log.warning('TTS skipped: text empty after speech cleanup')
         return None
 
+    # Build voice instructions (the key to natural-sounding speech)
+    instructions = _build_voice_instructions(voice_config, persona, sentiment)
+
     try:
-        # Use tts-1-hd for highest quality, most natural-sounding voice
+        payload = {
+            'model': TTS_MODEL,
+            'input': clean_text,
+            'voice': tts_voice,
+            'response_format': 'opus',
+            'speed': voice_config.get('speed', 1.0),
+            'instructions': instructions,
+        }
+
         r = requests.post(
             'https://api.openai.com/v1/audio/speech',
             headers={
                 'Authorization': f'Bearer {config.OPENAI_API_KEY}',
                 'Content-Type': 'application/json',
             },
-            json={
-                'model': 'tts-1-hd',
-                'input': clean_text,
-                'voice': tts_voice,
-                'response_format': 'opus',
-                'speed': voice_config.get('speed', 1.0),
-            },
+            json=payload,
             timeout=30,
         )
 
         if r.status_code == 200:
             audio_b64 = base64.b64encode(r.content).decode('utf-8')
             log.info(
-                f'[TTS-AUDIT] voice={tts_voice} lang={language} '
+                f'[TTS-AUDIT] model={TTS_MODEL} voice={tts_voice} '
+                f'sentiment={sentiment} lang={language} '
                 f'size={len(r.content)}B text="{text[:60]}"'
             )
             return {
                 'audio_b64': audio_b64,
                 'voice': tts_voice,
                 'language': language,
+                'model': TTS_MODEL,
             }
         else:
             log.error(f'TTS API error ({r.status_code}): {r.text[:200]}')
