@@ -93,11 +93,12 @@ import re
 # that is practically indistinguishable from a real human.
 ELEVENLABS_MODEL = 'eleven_multilingual_v2'
 ELEVENLABS_COST_PER_1K_CHARS = 0.30  # ~$0.30 per 1K chars (standard tier)
+ELEVENLABS_OUTPUT_FORMAT = 'mp3_44100_128'  # ElevenLabs best quality MP3
 ELEVENLABS_VOICE_SETTINGS = {
-    'stability': 0.30,           # Low = more expressive, natural variation
-    'similarity_boost': 0.85,    # High = faithful to the voice's timbre
-    'style': 0.70,               # High = more charisma and expressiveness
-    'use_speaker_boost': True,   # Enhances clarity and vocal presence
+    'stability': 0.45,           # Medium = natural variation without chaos, sounds like real person
+    'similarity_boost': 0.85,    # High = keeps YOUR voice identity, faithful to cloned timbre
+    'style': 0.15,               # Low = subtle expressiveness, avoids exaggeration on cloned voice
+    'use_speaker_boost': True,   # Clearer, fuller voice presence
 }
 
 # --- OpenAI (FALLBACK) ---
@@ -136,19 +137,19 @@ def _prepare_text_for_speech(text):
                r'\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002600-\U000026FF]+', '', t)
 
     # --- Add natural speech rhythm ---
-    # Normalize ellipses to exactly 3 dots (TTS creates pauses with these)
+    # Normalize ellipses to exactly 3 dots (TTS creates breathing pauses)
     t = re.sub(r'\.{2,}', '...', t)
-    # Colons become commas (micro-pause, flows better in speech)
-    t = re.sub(r':\s*', ', ', t)
+    # Colons become ellipsis (breath pause, not just comma — more organic)
+    t = re.sub(r':\s*', '... ', t)
     # Semicolons become natural pauses
     t = re.sub(r';\s*', '... ', t)
-    # Dashes used as separators become micro-pauses
-    t = re.sub(r'\s*[—–]\s*', ', ', t)
+    # Dashes used as separators become breath pauses
+    t = re.sub(r'\s*[—–]\s*', '... ', t)
 
     # --- Convert structure to flowing speech ---
     # Newlines become natural breath pauses (ellipsis = TTS breathes here)
     t = re.sub(r'\n{2,}', '... ', t)  # Double newline = longer pause
-    t = re.sub(r'\n', ', ', t)        # Single newline = micro-pause
+    t = re.sub(r'\n', '... ', t)      # Single newline = breath pause (not comma)
 
     # --- Cleanup ---
     t = re.sub(r'\s{2,}', ' ', t)
@@ -480,9 +481,9 @@ def _tts_elevenlabs(clean_text, voice_config, sentiment, language):
             headers={
                 'xi-api-key': api_key,
                 'Content-Type': 'application/json',
-                'Accept': 'audio/ogg',
+                'Accept': 'audio/mpeg',
             },
-            params={'output_format': 'ogg_opus'},
+            params={'output_format': ELEVENLABS_OUTPUT_FORMAT},
             json=payload,
             timeout=15,
         )

@@ -11,7 +11,7 @@ class Config:
 
     # --- ElevenLabs (Primary TTS) ---
     ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY', '')
-    ELEVENLABS_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID', 'pNInz6obpgDQGcFmaJgB')  # "Adam" - young male
+    ELEVENLABS_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID', 'ASZKXTy56hqkRmqOqckz')  # "oliver PT-BR" - cloned voice
 
     # --- Evolution API (WhatsApp) ---
     EVOLUTION_API_KEY = os.getenv('EVOLUTION_API_KEY', '')
