@@ -96,9 +96,9 @@ ELEVENLABS_MODEL_TURBO = 'eleven_turbo_v2_5'  # Lower latency, faster inference
 ELEVENLABS_COST_PER_1K_CHARS = 0.30  # ~$0.30 per 1K chars (standard tier)
 ELEVENLABS_OUTPUT_FORMAT = 'mp3_44100_128'  # ElevenLabs best quality MP3
 ELEVENLABS_VOICE_SETTINGS = {
-    'stability': 0.40,           # Reduced from 0.45: more natural variation, less robotic
+    'stability': 0.30,           # Lower = more natural variation and energy
     'similarity_boost': 0.85,    # High = keeps YOUR voice identity, faithful to cloned timbre
-    'style': 0.15,               # Low = subtle expressiveness, avoids exaggeration on cloned voice
+    'style': 0.35,               # Higher = more expressive, conversational, not robotic
     'use_speaker_boost': True,   # Clearer, fuller voice presence
 }
 
@@ -420,6 +420,32 @@ def _build_voice_instructions(voice_config, persona=None, sentiment='neutral'):
     return base + sentiment_map.get(sentiment, sentiment_map.get('neutral', ''))
 
 
+def _ffmpeg_speed(audio_bytes, speed):
+    """Speed up/slow down audio using ffmpeg atempo filter.
+
+    Returns processed bytes or None on failure.
+    """
+    import subprocess, tempfile, os
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as inp:
+            inp.write(audio_bytes)
+            inp_path = inp.name
+        out_path = inp_path.replace('.mp3', '_fast.mp3')
+        subprocess.run(
+            ['ffmpeg', '-y', '-i', inp_path, '-filter:a', f'atempo={speed}', '-vn', out_path],
+            capture_output=True, timeout=15, check=True,
+        )
+        with open(out_path, 'rb') as f:
+            result = f.read()
+        os.unlink(inp_path)
+        os.unlink(out_path)
+        log.debug(f'[TTS] ffmpeg speed {speed}x: {len(audio_bytes)}B -> {len(result)}B')
+        return result
+    except Exception as e:
+        log.warning(f'[TTS] ffmpeg speed failed: {e}, using original')
+        return None
+
+
 def _tts_elevenlabs(clean_text, voice_config, sentiment, language):
     """Generate audio via ElevenLabs API (primary provider).
 
@@ -463,11 +489,18 @@ def _tts_elevenlabs(clean_text, voice_config, sentiment, language):
         )
 
         if r.status_code == 200:
-            audio_b64 = base64.b64encode(r.content).decode('utf-8')
+            audio_data = r.content
+
+            # Speed up ElevenLabs audio via ffmpeg (API has no speed param)
+            speed = voice_config.get('speed', 1.0)
+            if speed and speed != 1.0:
+                audio_data = _ffmpeg_speed(audio_data, speed) or audio_data
+
+            audio_b64 = base64.b64encode(audio_data).decode('utf-8')
             log.info(
                 f'[TTS-AUDIT] provider=elevenlabs model={ELEVENLABS_MODEL} '
                 f'voice_id={voice_id} sentiment={sentiment} lang={language} '
-                f'size={len(r.content)}B text="{clean_text[:60]}"'
+                f'speed={speed} size={len(audio_data)}B text="{clean_text[:60]}"'
             )
             return {
                 'audio_b64': audio_b64,
