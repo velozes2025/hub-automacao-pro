@@ -192,7 +192,7 @@ def _process_incoming(instance_name, data):
     else:
         language = detected_language
         try:
-            conv_db.update_conversation(conversation_id, language=detected_language)
+            conv_db.update_conversation(conversation_id, tenant_id=tenant_id, language=detected_language)
         except Exception:
             pass
 
@@ -251,15 +251,7 @@ def _process_incoming(instance_name, data):
     if can_send:
         whatsapp.set_typing(instance_name, send_phone, True)
 
-    # --- Load conversation context for AI ---
-    history = conv_db.get_message_history(conversation_id)
-    lead = leads_db.get_lead(tenant_id, db_phone)
-
-    conversation_ctx = dict(conversation)
-    conversation_ctx['messages'] = history
-    conversation_ctx['lead'] = lead
-
-    # --- Get agent config ---
+    # --- Get agent config FIRST (needed for history limit) ---
     agent_config = tenants_db.get_active_agent_config(tenant_id)
     if not agent_config:
         agent_config = {
@@ -270,6 +262,15 @@ def _process_incoming(instance_name, data):
             'persona': {},
             'tools_enabled': '["web_search"]',
         }
+
+    # --- Load conversation context for AI ---
+    max_history = agent_config.get('max_history_messages', 10)
+    history = conv_db.get_message_history(conversation_id, limit=max_history)
+    lead = leads_db.get_lead(tenant_id, db_phone)
+
+    conversation_ctx = dict(conversation)
+    conversation_ctx['messages'] = history
+    conversation_ctx['lead'] = lead
 
     # Per-tenant API key
     api_key = account.get('tenant_anthropic_key')

@@ -19,29 +19,37 @@ def get_or_create_conversation(tenant_id, whatsapp_account_id, contact_phone,
     """
     conv = query(
         """SELECT * FROM conversations
-           WHERE whatsapp_account_id = %s AND contact_phone = %s""",
-        (str(whatsapp_account_id), contact_phone),
+           WHERE tenant_id = %s AND whatsapp_account_id = %s AND contact_phone = %s""",
+        (str(tenant_id), str(whatsapp_account_id), contact_phone),
         fetch='one',
     )
 
     if conv:
-        # Update name if it changed and new name is non-empty
-        if contact_name and contact_name != conv.get('contact_name'):
+        # Defensive: verify tenant isolation
+        if str(conv.get('tenant_id', '')) != str(tenant_id):
+            log.error(
+                f'TENANT MISMATCH: conversation {conv["id"]} belongs to '
+                f'{conv.get("tenant_id")} but requested by {tenant_id}'
+            )
+            conv = None  # Fall through to INSERT/upsert below
+        else:
+            # Update name if it changed and new name is non-empty
+            if contact_name and contact_name != conv.get('contact_name'):
+                execute(
+                    """UPDATE conversations
+                       SET contact_name = %s, updated_at = CURRENT_TIMESTAMP
+                       WHERE id = %s AND tenant_id = %s""",
+                    (contact_name, str(conv['id']), str(tenant_id)),
+                )
+                conv['contact_name'] = contact_name
+            # Touch last_message_at
             execute(
                 """UPDATE conversations
-                   SET contact_name = %s, updated_at = CURRENT_TIMESTAMP
-                   WHERE id = %s""",
-                (contact_name, str(conv['id'])),
+                   SET last_message_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = %s AND tenant_id = %s""",
+                (str(conv['id']), str(tenant_id)),
             )
-            conv['contact_name'] = contact_name
-        # Touch last_message_at
-        execute(
-            """UPDATE conversations
-               SET last_message_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-               WHERE id = %s""",
-            (str(conv['id']),),
-        )
-        return conv
+            return conv
 
     return execute(
         """INSERT INTO conversations
@@ -73,7 +81,7 @@ def get_conversation(conversation_id, tenant_id=None):
     )
 
 
-def update_conversation(conversation_id, **fields):
+def update_conversation(conversation_id, tenant_id=None, **fields):
     sets = []
     vals = []
     for k, v in fields.items():
@@ -81,6 +89,11 @@ def update_conversation(conversation_id, **fields):
         vals.append(v)
     sets.append("updated_at = CURRENT_TIMESTAMP")
     vals.append(str(conversation_id))
+    if tenant_id:
+        return execute(
+            f"UPDATE conversations SET {', '.join(sets)} WHERE id = %s AND tenant_id = %s",
+            tuple(vals) + (str(tenant_id),),
+        )
     return execute(
         f"UPDATE conversations SET {', '.join(sets)} WHERE id = %s",
         tuple(vals),

@@ -131,8 +131,14 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt',
     - Lead info if available
     - Language instruction
     """
+    import json as _json
     base = agent_config.get('system_prompt', '')
     persona = agent_config.get('persona', {})
+    if isinstance(persona, str):
+        try:
+            persona = _json.loads(persona) if persona else {}
+        except (ValueError, TypeError):
+            persona = {}
     contact_name = conversation.get('contact_name', '')
     messages = conversation.get('messages', [])
     stage = conversation.get('stage', 'new')
