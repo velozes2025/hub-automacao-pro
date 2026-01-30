@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% set active = "dashboard" %}
+{% block title %}Dashboard - Hub Automacao Pro{% endblock %}
+
+{% block content %}
+<h2 style="color:#25d366;margin-bottom:16px;">Dashboard</h2>
+
+{% for t in tenants %}
+<div class="card">
+    <h2>
+        <a href="/admin/tenants/{{ t.id }}">{{ t.name }}</a>
+        <span style="color:#666;font-size:0.8em;margin-left:8px;">{{ t.slug }}</span>
+    </h2>
+    <div class="stats-grid" style="margin-top:12px;">
+        <div class="stat-card">
+            <div class="stat-label">Msgs Hoje</div>
+            <div class="stat-value">{{ t.msgs_today or 0 }}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">WhatsApp</div>
+            <div class="stat-value" style="font-size:1.5em;">{{ t.accounts|length }}</div>
+            <div class="stat-detail">instancias</div>
+        </div>
+    </div>
+
+    {% if t.accounts %}
+    <table>
+        <thead>
+            <tr>
+                <th>Instancia</th>
+                <th>Status</th>
+                <th>Webhook</th>
+                <th>Acoes</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for a in t.accounts %}
+            <tr>
+                <td><code>{{ a.instance_name }}</code></td>
+                <td id="status-{{ a.id }}">
+                    <span class="dot dot-yellow"></span> Verificando...
+                </td>
+                <td>
+                    {% if a.webhook_configured %}
+                    <span class="dot dot-green"></span> OK
+                    {% else %}
+                    <span class="dot dot-red"></span> Pendente
+                    {% endif %}
+                </td>
+                <td>
+                    <a href="/admin/tenants/{{ t.id }}" class="btn btn-sm btn-primary">Gerenciar</a>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color:#666;">Nenhuma instancia WhatsApp configurada.</p>
+    {% endif %}
+</div>
+{% endfor %}
+
+{% if not tenants %}
+<div class="card">
+    <p style="color:#888;">Nenhum tenant encontrado.</p>
+    {% if is_super_admin %}
+    <a href="/admin/tenants/new" class="btn btn-primary" style="margin-top:12px;">Criar Primeiro Tenant</a>
+    {% endif %}
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('[id^="status-"]').forEach(function(el) {
+        var id = el.id.replace('status-', '');
+        fetch('/admin/api/status/' + id)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.state === 'open') {
+                    el.innerHTML = '<span class="dot dot-green"></span> Conectado';
+                } else if (data.state === 'connecting') {
+                    el.innerHTML = '<span class="dot dot-yellow"></span> Conectando';
+                } else {
+                    el.innerHTML = '<span class="dot dot-red"></span> Desconectado';
+                }
+            })
+            .catch(function() {
+                el.innerHTML = '<span class="dot dot-red"></span> Erro';
+            });
+    });
+});
+</script>
+{% endblock %}

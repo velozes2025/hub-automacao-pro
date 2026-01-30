@@ -36,7 +36,14 @@ def get_lead(tenant_id, phone):
     )
 
 
-def get_lead_by_conversation(conversation_id):
+def get_lead_by_conversation(conversation_id, tenant_id=None):
+    """Get lead linked to a conversation. Enforces tenant isolation when tenant_id provided."""
+    if tenant_id:
+        return query(
+            "SELECT * FROM leads_v2 WHERE conversation_id = %s AND tenant_id = %s",
+            (str(conversation_id), str(tenant_id)),
+            fetch='one',
+        )
     return query(
         "SELECT * FROM leads_v2 WHERE conversation_id = %s",
         (str(conversation_id),),

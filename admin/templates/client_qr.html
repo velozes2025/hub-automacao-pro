@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Conectar WhatsApp</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="qr-container">
+            <h1 style="color:#25d366;margin-bottom:24px;">Conectar WhatsApp</h1>
+            <p style="color:#aaa;margin-bottom:16px;">Instancia: <code>{{ account.instance_name }}</code></p>
+
+            <div id="qr-area">
+                <p class="qr-status waiting">Carregando QR Code...</p>
+            </div>
+        </div>
+    </div>
+    <script>
+    function checkQR() {
+        fetch('/api/qr/{{ token }}')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var area = document.getElementById('qr-area');
+                if (data.state === 'open') {
+                    area.innerHTML = '<p class="qr-status connected">WhatsApp Conectado!</p>';
+                } else if (data.base64) {
+                    area.innerHTML = '<img src="data:image/png;base64,' + data.base64 + '" alt="QR Code"><p class="qr-status waiting">Escaneie o QR Code com seu WhatsApp</p>';
+                    setTimeout(checkQR, 5000);
+                } else {
+                    area.innerHTML = '<p class="qr-status waiting">Aguardando QR Code...</p>';
+                    setTimeout(checkQR, 3000);
+                }
+            })
+            .catch(function() {
+                setTimeout(checkQR, 5000);
+            });
+    }
+    checkQR();
+    </script>
+</body>
+</html>

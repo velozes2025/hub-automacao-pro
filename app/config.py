@@ -24,6 +24,7 @@ class Config:
     BOT_PORT = int(os.getenv('BOT_PORT', '3000'))
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
     MAX_WEBHOOK_WORKERS = int(os.getenv('MAX_WEBHOOK_WORKERS', '20'))
+    INTERNAL_API_KEY = os.getenv('INTERNAL_API_KEY', '')  # Secures /api/* endpoints
 
     # --- Retry / Workers ---
     RETRY_MAX_ATTEMPTS = 5

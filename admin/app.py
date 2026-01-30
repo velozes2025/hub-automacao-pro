@@ -8,6 +8,7 @@ Roles:
 
 import os
 import re
+import json
 import logging
 from functools import wraps
 from flask import Flask, request, redirect, url_for, render_template, \
@@ -22,6 +23,13 @@ from app.channels import whatsapp
 
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'change-me-in-production')
+
+
+@app.context_processor
+def inject_globals():
+    return {
+        'is_super_admin': session.get('role') == 'super_admin' if session.get('admin') else False,
+    }
 BOT_WEBHOOK_URL = os.getenv('BOT_INTERNAL_URL', 'http://hub-bot:3000') + '/webhook'
 ADMIN_DEFAULT_PASSWORD = os.getenv('ADMIN_DEFAULT_PASSWORD', 'admin123')
 
@@ -122,16 +130,76 @@ def dashboard():
                            is_super_admin=session.get('role') == 'super_admin')
 
 
+# --- Clients Management ---
+
+@app.route('/admin/clients')
+@login_required
+def clients():
+    user_tenant = _get_user_tenant_id()
+    is_super = session.get('role') == 'super_admin'
+
+    if is_super:
+        tenants = admin_db.get_tenants_with_stats()
+    else:
+        tenants = admin_db.list_tenants(tenant_id=user_tenant)
+        # Add basic stats for scoped admin
+        for t in tenants:
+            accounts = admin_db.list_whatsapp_accounts(str(t['id']))
+            t['instance_count'] = len(accounts)
+            m = admin_db.get_messages_today(str(t['id']))
+            t['msgs_today'] = m['total'] if m else 0
+            t['cost_30d'] = 0
+            t['ai_cost'] = 0
+            t['tts_cost'] = 0
+            t['stt_cost'] = 0
+            t['total_conversations'] = 0
+
+    return render_template('clients.html',
+                           tenants=tenants,
+                           is_super_admin=is_super)
+
+
 # --- Tenant Management ---
 
 @app.route('/admin/tenants/new')
-@super_admin_required
+@login_required
 def tenant_new():
     return render_template('tenant_form.html', tenant=None)
 
 
+def _build_persona_from_form():
+    """Extract persona + voice config from form fields."""
+    persona = {}
+    if request.form.get('persona_name'):
+        persona['name'] = request.form['persona_name'].strip()
+    if request.form.get('persona_role'):
+        persona['role'] = request.form['persona_role'].strip()
+    if request.form.get('persona_tone'):
+        persona['tone'] = request.form['persona_tone'].strip()
+    if request.form.get('persona_gender'):
+        persona['gender'] = request.form['persona_gender']
+    if request.form.get('persona_age_range'):
+        persona['age_range'] = request.form['persona_age_range']
+
+    # Voice config (nested inside persona)
+    voice = {}
+    voice['enabled'] = request.form.get('voice_enabled') == 'true'
+    voice['tts_voice'] = request.form.get('voice_tts_voice', 'onyx')
+    voice['speed'] = float(request.form.get('voice_speed', 1.0))
+    voice['default_language'] = request.form.get('voice_language', 'pt')
+    persona['voice'] = voice
+
+    return persona
+
+
+def _get_tools_from_form():
+    """Extract enabled tools from form checkboxes."""
+    tools = request.form.getlist('tools')
+    return tools if tools else ['web_search']
+
+
 @app.route('/admin/tenants', methods=['POST'])
-@super_admin_required
+@login_required
 def tenant_create():
     name = request.form.get('name', '').strip()
     if not name:
@@ -139,21 +207,31 @@ def tenant_create():
         return redirect(url_for('tenant_new'))
 
     slug = request.form.get('slug', '').strip() or slugify(name)
-    tenant = admin_db.create_tenant(name, slug)
+
+    # API key override
+    api_key = request.form.get('anthropic_api_key', '').strip() or None
+
+    tenant = admin_db.create_tenant(name, slug, api_key=api_key)
     if not tenant:
-        flash('Erro ao criar tenant (slug ja existe?)', 'error')
+        flash('Erro ao criar cliente (slug ja existe?)', 'error')
         return redirect(url_for('tenant_new'))
 
-    # Create default agent config
+    # Create agent config with full persona + voice + tools
+    persona = _build_persona_from_form()
+    tools = _get_tools_from_form()
+
     admin_db.upsert_agent_config(
         tenant_id=str(tenant['id']),
         system_prompt=request.form.get('system_prompt', ''),
         model=request.form.get('model', 'claude-sonnet-4-20250514'),
         max_tokens=int(request.form.get('max_tokens', 150)),
+        max_history_messages=int(request.form.get('max_history_messages', 10)),
+        persona=persona,
+        tools_enabled=tools,
     )
 
-    flash(f'Tenant "{name}" criado com sucesso!', 'success')
-    return redirect(url_for('tenant_detail', tenant_id=tenant['id']))
+    flash(f'Cliente "{name}" criado com sucesso!', 'success')
+    return redirect(url_for('tenant_detail', tenant_id=tenant['id']), code=303)
 
 
 @app.route('/admin/tenants/<tenant_id>')
@@ -171,12 +249,14 @@ def tenant_detail(tenant_id):
     accounts = admin_db.list_whatsapp_accounts(tenant_id)
     agent_config = admin_db.get_agent_config(tenant_id)
     consumption = admin_db.get_consumption(tenant_id)
+    consumption_by_op = admin_db.get_consumption_by_operation(tenant_id)
 
     return render_template('tenant_detail.html',
                            tenant=tenant,
                            accounts=accounts,
                            agent_config=agent_config,
-                           consumption=consumption)
+                           consumption=consumption,
+                           consumption_by_op=consumption_by_op)
 
 
 @app.route('/admin/tenants/<tenant_id>/edit')
@@ -198,9 +278,21 @@ def tenant_update(tenant_id):
         flash('Acesso negado', 'error')
         return redirect(url_for('dashboard'))
 
-    admin_db.update_tenant(tenant_id,
-        name=request.form.get('name', '').strip(),
-    )
+    # Update tenant fields
+    update_fields = {'name': request.form.get('name', '').strip()}
+    if request.form.get('status'):
+        update_fields['status'] = request.form['status']
+
+    # API key override
+    api_key = request.form.get('anthropic_api_key', '').strip()
+    if api_key:
+        update_fields['anthropic_api_key'] = api_key
+
+    admin_db.update_tenant(tenant_id, **update_fields)
+
+    # Update agent config with full persona + voice + tools
+    persona = _build_persona_from_form()
+    tools = _get_tools_from_form()
 
     admin_db.upsert_agent_config(
         tenant_id=tenant_id,
@@ -208,10 +300,12 @@ def tenant_update(tenant_id):
         model=request.form.get('model', 'claude-sonnet-4-20250514'),
         max_tokens=int(request.form.get('max_tokens', 150)),
         max_history_messages=int(request.form.get('max_history_messages', 10)),
+        persona=persona,
+        tools_enabled=tools,
     )
 
-    flash('Configuracoes salvas', 'success')
-    return redirect(url_for('tenant_detail', tenant_id=tenant_id))
+    flash('Configuracoes salvas!', 'success')
+    return redirect(url_for('tenant_detail', tenant_id=tenant_id), code=303)
 
 
 # --- WhatsApp Account Management ---
@@ -308,14 +402,57 @@ def account_delete(account_id):
     return redirect(url_for('tenant_detail', tenant_id=account['tenant_id']))
 
 
-# --- Consumption ---
+# --- API Costs Dashboard ---
+
+@app.route('/admin/api-costs')
+@login_required
+def api_costs():
+    user_tenant = _get_user_tenant_id()
+    is_super = session.get('role') == 'super_admin'
+
+    today = admin_db.get_costs_today(tenant_id=user_tenant)
+    month = admin_db.get_costs_month(tenant_id=user_tenant)
+    by_operation = admin_db.get_costs_by_operation(tenant_id=user_tenant, days=30)
+    daily = admin_db.get_daily_costs(tenant_id=user_tenant, days=30)
+    projection = admin_db.get_projected_monthly_cost(tenant_id=user_tenant)
+
+    # Calculate projection
+    projected_cost = 0
+    if projection and projection.get('days_active') and projection.get('days_in_month'):
+        daily_avg = float(projection['month_so_far']) / max(float(projection['current_day']), 1)
+        projected_cost = daily_avg * float(projection['days_in_month'])
+
+    # Per-tenant breakdown (super_admin only)
+    by_tenant = admin_db.get_costs_by_tenant(days=30) if is_super else []
+
+    # Aggregate daily data for chart
+    chart_days = {}
+    for row in daily:
+        day_str = str(row['day'])
+        if day_str not in chart_days:
+            chart_days[day_str] = {'day': day_str, 'chat': 0, 'tts': 0, 'transcription': 0, 'total': 0}
+        op = row['operation']
+        cost = float(row['total_cost'])
+        chart_days[day_str][op] = chart_days[day_str].get(op, 0) + cost
+        chart_days[day_str]['total'] += cost
+    chart_data = sorted(chart_days.values(), key=lambda x: x['day'])
+
+    return render_template('api_costs.html',
+                           today=today,
+                           month=month,
+                           by_operation=by_operation,
+                           chart_data=chart_data,
+                           projected_cost=round(projected_cost, 4),
+                           by_tenant=by_tenant,
+                           is_super_admin=is_super)
+
+
+# --- Consumption (legacy) ---
 
 @app.route('/admin/consumption')
 @login_required
 def consumption():
-    user_tenant = _get_user_tenant_id()
-    consumos = admin_db.get_consumption(tenant_id=user_tenant)
-    return render_template('consumption.html', consumos=consumos)
+    return redirect(url_for('api_costs'))
 
 
 # --- Public QR (for clients) ---

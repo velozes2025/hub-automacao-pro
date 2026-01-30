@@ -92,13 +92,39 @@ def get_base64_media(instance_name, message_key):
             json={'message': {'key': message_key}},
             timeout=30,
         )
-        if r.status_code == 200:
+        if r.status_code in (200, 201):
             return r.json().get('base64', '')
         log.warning(f'Media download failed ({r.status_code})')
         return ''
     except Exception as e:
         log.error(f'Media download error: {e}')
         return ''
+
+
+def send_audio(instance_name, phone, base64_audio):
+    """Send an audio message (voice note) via Evolution API.
+
+    Args:
+        instance_name: Evolution API instance name.
+        phone: Recipient phone number.
+        base64_audio: Base64-encoded audio (OGG/Opus).
+
+    Returns True on success, False on failure.
+    """
+    try:
+        r = requests.post(
+            f'{config.EVOLUTION_URL}/message/sendWhatsAppAudio/{instance_name}',
+            headers=_headers(),
+            json={'number': phone, 'audio': base64_audio},
+            timeout=15,
+        )
+        if r.status_code in (200, 201):
+            return True
+        log.warning(f'Audio send failed ({r.status_code}): {r.text[:200]}')
+        return False
+    except Exception as e:
+        log.error(f'Audio send error: {e}')
+        return False
 
 
 # --- Instance Management ---

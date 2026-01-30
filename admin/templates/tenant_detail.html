@@ -1,0 +1,334 @@
+{% extends "base.html" %}
+{% set active = "clients" %}
+{% block title %}{{ tenant.name }} - Hub Automacao Pro{% endblock %}
+
+{% block content %}
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+    <a href="/admin/clients" style="color:#888;">&larr; Clientes</a>
+    <h2 style="color:#25d366;">{{ tenant.name }}</h2>
+    <span style="color:#666;">{{ tenant.slug }}</span>
+    {% if tenant.status == 'active' %}
+    <span class="badge badge-tts" style="margin-left:8px;">Ativo</span>
+    {% elif tenant.status == 'suspended' %}
+    <span class="badge" style="background:#3a3a1a;color:#f1c40f;">Suspenso</span>
+    {% else %}
+    <span class="badge" style="background:#3a1a1a;color:#e74c3c;">Inativo</span>
+    {% endif %}
+    <a href="/admin/tenants/{{ tenant.id }}/edit" class="btn btn-sm btn-primary" style="margin-left:auto;">Editar Cliente</a>
+</div>
+
+<!-- Dados da Empresa -->
+<div class="card">
+    <h2>Dados da Empresa</h2>
+    <table>
+        <tr>
+            <th style="width:180px;">Nome</th>
+            <td>{{ tenant.name }}</td>
+        </tr>
+        <tr>
+            <th>Slug</th>
+            <td><code>{{ tenant.slug }}</code></td>
+        </tr>
+        <tr>
+            <th>Status</th>
+            <td>
+                {% if tenant.status == 'active' %}
+                <span class="dot dot-green"></span> Ativo
+                {% elif tenant.status == 'suspended' %}
+                <span class="dot dot-yellow"></span> Suspenso
+                {% else %}
+                <span class="dot dot-red"></span> Inativo
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <th>API Key</th>
+            <td>
+                {% if tenant.anthropic_api_key %}
+                <span class="dot dot-green"></span> Chave propria configurada
+                {% else %}
+                <span class="dot dot-blue"></span> Usando chave global da plataforma
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <th>Criado em</th>
+            <td>{{ tenant.created_at.strftime('%d/%m/%Y %H:%M') if tenant.created_at else '-' }}</td>
+        </tr>
+    </table>
+</div>
+
+<!-- Instancias WhatsApp -->
+<div class="card">
+    <h2>Instancias WhatsApp</h2>
+    {% if accounts %}
+    <table>
+        <thead>
+            <tr>
+                <th>Instancia</th>
+                <th>Telefone</th>
+                <th>Status</th>
+                <th>Webhook</th>
+                <th>Acoes</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for a in accounts %}
+            <tr>
+                <td><code>{{ a.instance_name }}</code></td>
+                <td>{{ a.phone_number or '-' }}</td>
+                <td id="status-{{ a.id }}">
+                    <span class="dot dot-yellow"></span> Verificando...
+                </td>
+                <td>
+                    {% if a.webhook_configured %}
+                    <span class="dot dot-green"></span> Configurado
+                    {% else %}
+                    <span class="dot dot-red"></span> Pendente
+                    {% endif %}
+                </td>
+                <td>
+                    <form method="POST" action="/admin/accounts/{{ a.id }}/connect" style="display:inline;">
+                        <button type="submit" class="btn btn-sm btn-primary">Reconectar</button>
+                    </form>
+                    <form method="POST" action="/admin/accounts/{{ a.id }}/disconnect" style="display:inline;">
+                        <button type="submit" class="btn btn-sm btn-danger">Desconectar</button>
+                    </form>
+                    <form method="POST" action="/admin/accounts/{{ a.id }}/delete" style="display:inline;"
+                          onsubmit="return confirm('Tem certeza que deseja excluir esta instancia?');">
+                        <button type="submit" class="btn btn-sm" style="background:#555;">Excluir</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color:#666;">Nenhuma instancia WhatsApp conectada.</p>
+    {% endif %}
+
+    <form method="POST" action="/admin/tenants/{{ tenant.id }}/accounts/new" style="margin-top:16px;padding-top:16px;border-top:1px solid #222;">
+        <h3 style="color:#ccc;margin-bottom:12px;">Conectar Novo Numero</h3>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Nome da Instancia</label>
+                <input type="text" name="instance_name" placeholder="ex: empresa-principal" required
+                       pattern="[a-zA-Z0-9\-_]+" title="Apenas letras, numeros, hifens e underscores">
+                <small style="color:#666;">Identificador unico para esta conexao WhatsApp.</small>
+            </div>
+            <div style="display:flex;align-items:flex-end;">
+                <button type="submit" class="btn btn-primary">Criar e Conectar</button>
+            </div>
+        </div>
+    </form>
+</div>
+
+<!-- Configuracao do Agente -->
+{% if agent_config %}
+<div class="card">
+    <h2>Configuracao do Agente IA</h2>
+    <table>
+        <tr>
+            <th style="width:180px;">Modelo</th>
+            <td>
+                <code>{{ agent_config.model }}</code>
+                {% if 'opus' in agent_config.model %}
+                <span class="badge" style="background:#2a1a3a;color:#a855f7;margin-left:6px;">Premium</span>
+                {% elif 'haiku' in agent_config.model %}
+                <span class="badge" style="background:#1a3a2a;color:#25d366;margin-left:6px;">Economico</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <th>Max Tokens</th>
+            <td>{{ agent_config.max_tokens }} (~{{ (agent_config.max_tokens / 75)|int }} frases)</td>
+        </tr>
+        <tr>
+            <th>Historico</th>
+            <td>{{ agent_config.max_history_messages }} mensagens</td>
+        </tr>
+        <tr>
+            <th>System Prompt</th>
+            <td style="max-width:600px;">
+                {% if agent_config.system_prompt %}
+                <details>
+                    <summary style="cursor:pointer;color:#25d366;">Ver prompt ({{ agent_config.system_prompt|length }} chars)</summary>
+                    <pre style="margin-top:8px;white-space:pre-wrap;color:#ccc;font-size:0.85em;max-height:200px;overflow:auto;">{{ agent_config.system_prompt }}</pre>
+                </details>
+                {% else %}
+                <span style="color:#666;">Nao configurado</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <th>Ferramentas</th>
+            <td>
+                {% set tools = agent_config.tools_enabled or [] %}
+                {% if tools is string %}
+                <code>{{ tools }}</code>
+                {% elif tools %}
+                {% for t in tools %}
+                <span class="badge badge-chat" style="margin-right:4px;">{{ t }}</span>
+                {% endfor %}
+                {% else %}
+                <span style="color:#666;">Nenhuma</span>
+                {% endif %}
+            </td>
+        </tr>
+    </table>
+
+    <!-- Persona -->
+    {% set persona = agent_config.persona or {} %}
+    {% if persona is string %}{% set persona = {} %}{% endif %}
+    {% if persona %}
+    <div style="margin-top:16px;padding-top:16px;border-top:1px solid #222;">
+        <h3 style="color:#ccc;margin-bottom:8px;">Persona</h3>
+        <table>
+            {% if persona.get('name') %}
+            <tr><th style="width:180px;">Nome</th><td>{{ persona.name }}</td></tr>
+            {% endif %}
+            {% if persona.get('role') %}
+            <tr><th>Funcao</th><td>{{ persona.role }}</td></tr>
+            {% endif %}
+            {% if persona.get('tone') %}
+            <tr><th>Tom</th><td>{{ persona.tone }}</td></tr>
+            {% endif %}
+            {% if persona.get('gender') %}
+            <tr><th>Genero</th><td>{{ 'Masculino' if persona.gender == 'male' else 'Feminino' }}</td></tr>
+            {% endif %}
+            {% if persona.get('age_range') %}
+            <tr><th>Faixa Etaria</th><td>{{ persona.age_range }}</td></tr>
+            {% endif %}
+        </table>
+    </div>
+    {% endif %}
+
+    <!-- Voice Config -->
+    {% set voice = persona.get('voice', {}) if persona else {} %}
+    {% if voice %}
+    <div style="margin-top:16px;padding-top:16px;border-top:1px solid #222;">
+        <h3 style="color:#ccc;margin-bottom:8px;">Voz (TTS)</h3>
+        <table>
+            <tr>
+                <th style="width:180px;">Audio Habilitado</th>
+                <td>
+                    {% if voice.get('enabled') %}
+                    <span class="dot dot-green"></span> Sim
+                    {% else %}
+                    <span class="dot dot-red"></span> Nao
+                    {% endif %}
+                </td>
+            </tr>
+            <tr><th>Voz</th><td><code>{{ voice.get('tts_voice', 'N/A') }}</code></td></tr>
+            <tr><th>Velocidade</th><td>{{ voice.get('speed', 1.0) }}x</td></tr>
+            <tr><th>Idioma Padrao</th><td>{{ voice.get('default_language', 'pt') }}</td></tr>
+        </table>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+<!-- Consumption by Operation Type -->
+{% if consumption_by_op %}
+<div class="card">
+    <h2>Consumo por Recurso (30 dias)</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Tipo</th>
+                <th>Provedor</th>
+                <th>Modelo</th>
+                <th class="number">Chamadas</th>
+                <th class="number">Tokens In</th>
+                <th class="number">Tokens Out</th>
+                <th class="number">Custo</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% set ns = namespace(total=0) %}
+        {% for c in consumption_by_op %}
+            {% set ns.total = ns.total + (c.total_cost|float) %}
+            <tr>
+                <td>
+                    {% if c.operation == 'chat' %}
+                    <span class="badge badge-chat">IA Chat</span>
+                    {% elif c.operation == 'tts' %}
+                    <span class="badge badge-tts">Voz (TTS)</span>
+                    {% elif c.operation == 'transcription' %}
+                    <span class="badge badge-transcription">Transcricao</span>
+                    {% else %}
+                    <span class="badge">{{ c.operation }}</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if c.operation == 'chat' %}
+                    <span style="color:#5dade2;">Anthropic</span>
+                    {% else %}
+                    <span style="color:#25d366;">OpenAI</span>
+                    {% endif %}
+                </td>
+                <td><code>{{ c.model }}</code></td>
+                <td class="number">{{ c.calls }}</td>
+                <td class="number">{{ '{:,}'.format(c.input_tokens|int) }}</td>
+                <td class="number">{{ '{:,}'.format(c.output_tokens|int) }}</td>
+                <td class="number">${{ '%.4f' % (c.total_cost|float) }}</td>
+            </tr>
+        {% endfor %}
+            <tr style="border-top:2px solid #333;">
+                <td colspan="6" style="text-align:right;color:#888;"><strong>Total</strong></td>
+                <td class="number"><strong style="color:#25d366;">${{ '%.4f' % ns.total }}</strong></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+{% elif consumption %}
+<div class="card">
+    <h2>Consumo (30 dias)</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Modelo</th>
+                <th class="number">Chamadas</th>
+                <th class="number">Tokens</th>
+                <th class="number">Custo</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for c in consumption %}
+            <tr>
+                <td><code>{{ c.model }}</code></td>
+                <td class="number">{{ c.calls }}</td>
+                <td class="number">{{ '{:,}'.format(c.total_tokens|int) }}</td>
+                <td class="number">${{ '%.4f' % (c.total_cost|float) }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('[id^="status-"]').forEach(function(el) {
+        var id = el.id.replace('status-', '');
+        fetch('/admin/api/status/' + id)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.state === 'open') {
+                    el.innerHTML = '<span class="dot dot-green"></span> Conectado';
+                } else if (data.state === 'connecting') {
+                    el.innerHTML = '<span class="dot dot-yellow"></span> Conectando';
+                } else {
+                    el.innerHTML = '<span class="dot dot-red"></span> Desconectado';
+                }
+            })
+            .catch(function() {
+                el.innerHTML = '<span class="dot dot-red"></span> Erro';
+            });
+    });
+});
+</script>
+{% endblock %}

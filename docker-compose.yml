@@ -140,7 +140,9 @@ services:
   # Admin Panel - Gestao de Clientes
   # ============================================
   admin-panel:
-    build: ./qr-server
+    build:
+      context: .
+      dockerfile: admin/Dockerfile
     container_name: hub-admin
     restart: unless-stopped
     ports:

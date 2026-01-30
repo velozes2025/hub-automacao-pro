@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% set active = "clients" %}
+{% block title %}Clientes - Hub Automacao Pro{% endblock %}
+
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+    <h2 style="color:#25d366;">Clientes</h2>
+    <a href="/admin/tenants/new" class="btn btn-primary">+ Novo Cliente</a>
+</div>
+
+<!-- Summary Stats -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-label">Total Clientes</div>
+        <div class="stat-value">{{ tenants|length }}</div>
+        <div class="stat-detail">ativos na plataforma</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Instancias WhatsApp</div>
+        <div class="stat-value">{{ tenants|sum(attribute='instance_count') }}</div>
+        <div class="stat-detail">numeros conectados</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Msgs Hoje</div>
+        <div class="stat-value">{{ tenants|sum(attribute='msgs_today') }}</div>
+        <div class="stat-detail">todas as instancias</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Custo Total (30d)</div>
+        <div class="stat-value" style="font-size:1.5em;">${{ '%.2f' % tenants|sum(attribute='cost_30d') }}</div>
+        <div class="stat-detail">todos os clientes</div>
+    </div>
+</div>
+
+<!-- Clients Table -->
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Cliente</th>
+                <th class="number">WhatsApp</th>
+                <th class="number">Conversas</th>
+                <th class="number">Msgs Hoje</th>
+                <th class="number">IA Chat</th>
+                <th class="number">Voz (TTS)</th>
+                <th class="number">Transcricao</th>
+                <th class="number">Custo 30d</th>
+                <th>Acoes</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for t in tenants %}
+            <tr>
+                <td>
+                    <a href="/admin/tenants/{{ t.id }}" style="font-weight:bold;">{{ t.name }}</a>
+                    <br><span style="color:#666;font-size:0.8em;">{{ t.slug }}</span>
+                </td>
+                <td class="number">
+                    {% if t.instance_count > 0 %}
+                    <span class="badge badge-tts">{{ t.instance_count }}</span>
+                    {% else %}
+                    <span style="color:#666;">0</span>
+                    {% endif %}
+                </td>
+                <td class="number">{{ t.total_conversations or 0 }}</td>
+                <td class="number">{{ t.msgs_today or 0 }}</td>
+                <td class="number">${{ '%.4f' % (t.ai_cost|float) }}</td>
+                <td class="number">${{ '%.4f' % (t.tts_cost|float) }}</td>
+                <td class="number">${{ '%.4f' % (t.stt_cost|float) }}</td>
+                <td class="number"><strong>${{ '%.4f' % (t.cost_30d|float) }}</strong></td>
+                <td>
+                    <a href="/admin/tenants/{{ t.id }}" class="btn btn-sm btn-primary">Detalhes</a>
+                    <a href="/admin/tenants/{{ t.id }}/edit" class="btn btn-sm" style="background:#333;margin-left:4px;">Editar</a>
+                </td>
+            </tr>
+        {% endfor %}
+        {% if not tenants %}
+            <tr>
+                <td colspan="9" style="text-align:center;color:#666;padding:32px;">
+                    Nenhum cliente cadastrado ainda.
+                    <br><a href="/admin/tenants/new" class="btn btn-primary" style="margin-top:12px;">Criar Primeiro Cliente</a>
+                </td>
+            </tr>
+        {% endif %}
+        </tbody>
+    </table>
+</div>
+
+<div style="text-align:center;color:#555;font-size:0.8em;margin-top:16px;">
+    Custos incluem: Claude (Anthropic) + TTS-1-HD (OpenAI) + Whisper (OpenAI)
+</div>
+{% endblock %}

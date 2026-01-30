@@ -58,7 +58,14 @@ def get_or_create_conversation(tenant_id, whatsapp_account_id, contact_phone,
     )
 
 
-def get_conversation(conversation_id):
+def get_conversation(conversation_id, tenant_id=None):
+    """Get a conversation by ID. If tenant_id is provided, enforces isolation."""
+    if tenant_id:
+        return query(
+            "SELECT * FROM conversations WHERE id = %s AND tenant_id = %s",
+            (str(conversation_id), str(tenant_id)),
+            fetch='one',
+        )
     return query(
         "SELECT * FROM conversations WHERE id = %s",
         (str(conversation_id),),
@@ -106,16 +113,19 @@ def get_message_history(conversation_id, limit=10):
     return rows
 
 
-def get_conversation_with_context(conversation_id):
-    """Get conversation + lead + recent messages in one call."""
-    conv = get_conversation(conversation_id)
+def get_conversation_with_context(conversation_id, tenant_id=None):
+    """Get conversation + lead + recent messages in one call.
+
+    If tenant_id is provided, enforces tenant isolation.
+    """
+    conv = get_conversation(conversation_id, tenant_id=tenant_id)
     if not conv:
         return None
     conv['messages'] = get_message_history(conversation_id)
-    # Attach lead if exists
+    # Attach lead if exists — scoped to conversation (already tenant-isolated)
     lead = query(
-        "SELECT * FROM leads_v2 WHERE conversation_id = %s",
-        (str(conversation_id),),
+        "SELECT * FROM leads_v2 WHERE conversation_id = %s AND tenant_id = %s",
+        (str(conversation_id), str(conv['tenant_id'])),
         fetch='one',
     )
     conv['lead'] = lead

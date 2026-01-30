@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% set active = "api-costs" %}
+{% block title %}Custos API - Hub Automacao Pro{% endblock %}
+
+{% block content %}
+<h2 style="color:#25d366;margin-bottom:16px;">Custos de API</h2>
+
+<!-- Summary Cards -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-label">Hoje</div>
+        <div class="stat-value">${{ '%.4f' % (today.total_cost|float if today and today.total_cost else 0) }}</div>
+        <div class="stat-detail">{{ today.total_calls or 0 }} chamadas</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Este Mes</div>
+        <div class="stat-value">${{ '%.4f' % (month.total_cost|float if month and month.total_cost else 0) }}</div>
+        <div class="stat-detail">{{ month.total_calls or 0 }} chamadas</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Projecao Mensal</div>
+        <div class="stat-value {{ 'warning' if projected_cost > 10 else '' }}">${{ '%.2f' % projected_cost }}</div>
+        <div class="stat-detail">se manter esse ritmo</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Tokens (30d)</div>
+        <div class="stat-value" style="font-size:1.5em;">{{ '{:,}'.format(month.total_tokens|int if month and month.total_tokens else 0) }}</div>
+        <div class="stat-detail">input + output</div>
+    </div>
+</div>
+
+<!-- Breakdown by Operation -->
+<div class="section-title">Custo por Tipo de Recurso (30 dias)</div>
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Tipo</th>
+                <th>Modelo</th>
+                <th class="number">Chamadas</th>
+                <th class="number">Tokens In</th>
+                <th class="number">Tokens Out</th>
+                <th class="number">Custo</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% set ns = namespace(total=0) %}
+        {% for row in by_operation %}
+            {% set ns.total = ns.total + (row.total_cost|float) %}
+            <tr>
+                <td>
+                    {% if row.operation == 'chat' %}
+                    <span class="badge badge-chat">IA Chat</span>
+                    {% elif row.operation == 'tts' %}
+                    <span class="badge badge-tts">Voz (TTS)</span>
+                    {% elif row.operation == 'transcription' %}
+                    <span class="badge badge-transcription">Transcricao</span>
+                    {% else %}
+                    <span class="badge">{{ row.operation }}</span>
+                    {% endif %}
+                </td>
+                <td><code>{{ row.model }}</code></td>
+                <td class="number">{{ row.calls }}</td>
+                <td class="number">{{ '{:,}'.format(row.input_tokens|int) }}</td>
+                <td class="number">{{ '{:,}'.format(row.output_tokens|int) }}</td>
+                <td class="number">${{ '%.4f' % (row.total_cost|float) }}</td>
+            </tr>
+        {% endfor %}
+        {% if by_operation %}
+            <tr style="border-top:2px solid #333;">
+                <td colspan="5" style="text-align:right;color:#888;"><strong>Total</strong></td>
+                <td class="number"><strong style="color:#25d366;">${{ '%.4f' % ns.total }}</strong></td>
+            </tr>
+        {% endif %}
+        {% if not by_operation %}
+            <tr><td colspan="6" style="color:#666;text-align:center;">Sem dados ainda</td></tr>
+        {% endif %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Daily Chart -->
+<div class="section-title">Custo Diario (ultimos 30 dias)</div>
+<div class="card">
+    {% if chart_data %}
+    <div class="chart-container">
+        {% set max_cost = namespace(val=0.001) %}
+        {% for day in chart_data %}
+            {% if day.total > max_cost.val %}{% set max_cost.val = day.total %}{% endif %}
+        {% endfor %}
+        {% for day in chart_data[-15:] %}
+        <div class="chart-bar-row">
+            <div class="chart-bar-label">{{ day.day[5:] }}</div>
+            <div class="chart-bar-track">
+                {% if day.get('chat', 0) > 0 %}
+                <div class="chart-bar-fill chat" style="width:{{ (day.get('chat', 0) / max_cost.val * 100)|round(1) }}%;" title="IA: ${{ '%.4f' % day.get('chat', 0) }}"></div>
+                {% endif %}
+                {% if day.get('tts', 0) > 0 %}
+                <div class="chart-bar-fill tts" style="width:{{ (day.get('tts', 0) / max_cost.val * 100)|round(1) }}%;" title="TTS: ${{ '%.4f' % day.get('tts', 0) }}"></div>
+                {% endif %}
+                {% if day.get('transcription', 0) > 0 %}
+                <div class="chart-bar-fill transcription" style="width:{{ (day.get('transcription', 0) / max_cost.val * 100)|round(1) }}%;" title="STT: ${{ '%.4f' % day.get('transcription', 0) }}"></div>
+                {% endif %}
+            </div>
+            <div class="chart-bar-value">${{ '%.4f' % day.total }}</div>
+        </div>
+        {% endfor %}
+    </div>
+    <div style="margin-top:12px;display:flex;gap:16px;justify-content:center;">
+        <span><span class="dot dot-blue"></span> IA Chat</span>
+        <span><span class="dot dot-green"></span> Voz (TTS)</span>
+        <span><span class="dot dot-yellow"></span> Transcricao</span>
+    </div>
+    {% else %}
+    <p style="color:#666;text-align:center;">Sem dados ainda</p>
+    {% endif %}
+</div>
+
+<!-- Per-Tenant Breakdown (super_admin only) -->
+{% if is_super_admin and by_tenant %}
+<div class="section-title">Custo por Tenant (30 dias)</div>
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Tenant</th>
+                <th class="number">Conversas</th>
+                <th class="number">Chamadas</th>
+                <th class="number">IA Chat</th>
+                <th class="number">Voz (TTS)</th>
+                <th class="number">Transcricao</th>
+                <th class="number">Total</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% set ns2 = namespace(total=0) %}
+        {% for row in by_tenant %}
+            {% set ns2.total = ns2.total + (row.total_cost|float) %}
+            <tr>
+                <td>
+                    <a href="/admin/tenants/{{ row.tenant_id }}">{{ row.tenant_name }}</a>
+                    <span style="color:#666;font-size:0.8em;margin-left:4px;">{{ row.slug }}</span>
+                </td>
+                <td class="number">{{ row.conversations or 0 }}</td>
+                <td class="number">{{ row.calls }}</td>
+                <td class="number">${{ '%.4f' % (row.ai_cost|float) }}</td>
+                <td class="number">${{ '%.4f' % (row.tts_cost|float) }}</td>
+                <td class="number">${{ '%.4f' % (row.transcription_cost|float) }}</td>
+                <td class="number"><strong>${{ '%.4f' % (row.total_cost|float) }}</strong></td>
+            </tr>
+        {% endfor %}
+            <tr style="border-top:2px solid #333;">
+                <td colspan="6" style="text-align:right;color:#888;"><strong>Total Plataforma</strong></td>
+                <td class="number"><strong style="color:#25d366;">${{ '%.4f' % ns2.total }}</strong></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<div style="text-align:center;color:#555;font-size:0.8em;margin-top:24px;">
+    Dados atualizados em tempo real a cada carregamento de pagina.
+    Custos: Claude (API Anthropic) | TTS-1-HD (OpenAI) | Whisper (OpenAI)
+</div>
+{% endblock %}

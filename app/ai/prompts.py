@@ -68,9 +68,60 @@ def detect_language(text):
     return best if scores[best] > 0 else 'pt'
 
 
+# --- Sentiment detection ---
+
+_FRUSTRATED_WORDS = re.compile(
+    r'\b(problema|nao funciona|nao consegui|nao consigo|travou|bugou|quebrou|erro|'
+    r'irritado|irritada|cansado|cansada|demora|demorou|absurdo|pessimo|horrivel|'
+    r'reclamacao|reclamar|insatisfeito|decepcionado|raiva|revoltado|porcaria|'
+    r'lixo|merda|droga|cacete|pqp|ridiculo|sem resposta|ninguem responde|'
+    r'frustrated|angry|broken|terrible|horrible|worst|hate|furious|'
+    r'doesnt work|not working|still waiting|ridiculous)\b',
+    re.IGNORECASE,
+)
+_HAPPY_WORDS = re.compile(
+    r'\b(obrigado|obrigada|valeu|top|otimo|otima|perfeito|show|maravilha|'
+    r'excelente|incrivel|amei|adorei|gostei|feliz|satisfeito|parabens|'
+    r'muito bom|sensacional|massa|demais|genial|legal|bacana|'
+    r'thanks|thank you|great|amazing|awesome|perfect|excellent|love it|wonderful|'
+    r'happy|glad|appreciate)\b',
+    re.IGNORECASE,
+)
+_CONFUSED_WORDS = re.compile(
+    r'\b(nao entendi|como funciona|como faz|nao sei|confuso|confusa|duvida|'
+    r'explica|explicar|pode repetir|como assim|que|o que|nao compreendi|'
+    r'lost|confused|dont understand|how does|what do you mean|'
+    r'can you explain|im not sure|unclear)\b',
+    re.IGNORECASE,
+)
+_URGENT_WORDS = re.compile(
+    r'\b(urgente|urgencia|agora|rapido|imediato|emergencia|socorro|'
+    r'preciso agora|ja|logo|correndo|pressa|deadline|prazo|'
+    r'urgent|asap|emergency|right now|immediately|hurry)\b',
+    re.IGNORECASE,
+)
+
+
+def detect_sentiment(text):
+    """Detect emotional tone from user message.
+
+    Returns: 'frustrated', 'happy', 'confused', 'urgent', or 'neutral'.
+    """
+    t = text.lower()
+    scores = {
+        'frustrated': len(_FRUSTRATED_WORDS.findall(t)) * 2,  # Weight frustration higher
+        'happy': len(_HAPPY_WORDS.findall(t)),
+        'confused': len(_CONFUSED_WORDS.findall(t)),
+        'urgent': len(_URGENT_WORDS.findall(t)),
+    }
+    best = max(scores, key=scores.get)
+    return best if scores[best] > 0 else 'neutral'
+
+
 # --- System prompt builder ---
 
-def build_system_prompt(agent_config, conversation, lead=None, language='pt'):
+def build_system_prompt(agent_config, conversation, lead=None, language='pt',
+                        spoken_mode=False, sentiment='neutral'):
     """Build the full system prompt for a Claude call.
 
     Combines:
@@ -96,12 +147,21 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt'):
             'NAO invente nenhum nome, NAO use apelidos do perfil como nome. '
         )
 
+    # Language instruction — strict: always match the user's language
+    lang_names = {'pt': 'português brasileiro', 'en': 'English', 'es': 'español'}
+    lang_name = lang_names.get(language, 'português brasileiro')
+    lang_rule = (
+        f'IDIOMA OBRIGATORIO: Responda EXCLUSIVAMENTE em {lang_name}. '
+        f'NAO troque de idioma. NAO misture idiomas. '
+        f'Se o usuario trocar de idioma, acompanhe o idioma dele.'
+    )
+
     # Context block
     total_msgs = len(messages)
     if total_msgs > 1:
         ctx = (
             f'\n\nCONTEXTO: Ja trocaram {total_msgs} msgs. '
-            f'Idioma detectado: {language}. '
+            f'{lang_rule} '
             f'{f"Nome do cliente: {nome}. Chame pelo nome. " if nome else nome_instrucao}'
             f'NAO se apresente de novo. Continue a conversa naturalmente. '
             f'Seja proativo, sugira, pergunte.'
@@ -110,7 +170,7 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt'):
         persona_name = persona.get('name', 'Oliver')
         ctx = (
             f'\n\nCONTEXTO: Primeiro contato. '
-            f'Idioma detectado: {language}. RESPONDA NESSE IDIOMA. '
+            f'{lang_rule} '
             f'{f"Nome do cliente: {nome}. " if nome else nome_instrucao}'
             f'Se apresente: {persona_name}. '
             f'Pergunte o ramo do negocio e como pode ajudar. So nesta primeira vez.'
@@ -137,4 +197,78 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt'):
     if stage and stage != 'new':
         stage_ctx = f'\n\nESTAGIO DA CONVERSA: {stage}. Adapte seu tom e abordagem.'
 
-    return base + ctx + lead_ctx + stage_ctx
+    # Spoken mode: optimize text for TTS when response will be audio
+    spoken_ctx = ''
+    if spoken_mode:
+        # Emotion-specific instruction based on detected sentiment
+        emotion_guide = _SENTIMENT_SPEECH_GUIDES.get(sentiment, _SENTIMENT_SPEECH_GUIDES['neutral'])
+
+        spoken_ctx = (
+            '\n\nMODO VOZ — Sua resposta vai virar AUDIO no WhatsApp. '
+            'Voce esta FALANDO com a pessoa, nao escrevendo. '
+            'Imagine que voce pegou o telefone e esta respondendo ao vivo.\n\n'
+            'REGRA DE OURO: O texto que voce escrever sera lido em voz alta por um sistema de voz. '
+            'A UNICA forma de controlar emocao, pausas e entonacao e pela PONTUACAO e ESCOLHA DE PALAVRAS. '
+            'Entao use isso a seu favor:\n'
+            '- "..." = pausa longa, respiro, momento de reflexao\n'
+            '- "," = micro-pausa, ritmo natural\n'
+            '- "?" = entonacao sobe no final (pergunta)\n'
+            '- "!" = enfase, energia, empolgacao\n'
+            '- "." = fim de pensamento, pausa media\n\n'
+            f'TOM EMOCIONAL AGORA: {emotion_guide}\n\n'
+            'FORMATO OBRIGATORIO:\n'
+            '- Maximo 2 a 3 frases CURTAS. Audio longo = ruim.\n'
+            '- Fale como brasileiro: "a gente", "voce", "pra", "ta", "ne".\n'
+            '- Comece com uma interjeicao ou conectivo: "Olha...", "Entao...", "Ah,", "Poxa,", "Opa!".\n'
+            '- TERMINE com pergunta ou convite pra continuar a conversa.\n'
+            '- ZERO markdown, negrito, listas, emojis, links, numeros de telefone.\n'
+            '- ZERO linguagem corporativa ou formal. Isso e uma conversa, nao um e-mail.'
+        )
+
+    return base + ctx + lead_ctx + stage_ctx + spoken_ctx
+
+
+# --- Sentiment-specific speech guides ---
+
+_SENTIMENT_SPEECH_GUIDES = {
+    'frustrated': (
+        'O cliente esta FRUSTRADO ou irritado. Voce precisa:\n'
+        '- Ser EMPATICO: "Poxa... eu entendo, isso e chato mesmo."\n'
+        '- Tom calmo, acolhedor, paciente. Fale devagar (mais virgulas, mais pausas).\n'
+        '- Valide o sentimento PRIMEIRO antes de oferecer solucao.\n'
+        '- Use: "Olha... eu entendo sua frustracao...", "Poxa, sinto muito por isso...", '
+        '"Calma que a gente resolve isso, ta bom?".\n'
+        '- NAO seja animado. NAO minimize o problema. NAO diga "sem problemas".'
+    ),
+    'happy': (
+        'O cliente esta FELIZ ou positivo. Voce precisa:\n'
+        '- Acompanhar a energia! Seja animado tambem.\n'
+        '- Use "!" pra enfase, tom alegre e vibrante.\n'
+        '- Use: "Que bom!", "Fico feliz demais!", "Show! Isso ai!", "Que otimo ouvir isso!".\n'
+        '- Celebre junto, mas sem exagerar. Mantenha o profissionalismo.'
+    ),
+    'confused': (
+        'O cliente esta CONFUSO ou com duvida. Voce precisa:\n'
+        '- Ser PACIENTE e CLARO. Explique de forma simples.\n'
+        '- Use pausas pra dar tempo de absorver: "Entao... funciona assim,"\n'
+        '- Divida em passos curtos. Uma ideia por frase.\n'
+        '- Use: "Olha, e bem simples...", "Calma, vou te explicar...", '
+        '"Basicamente, o que acontece e...".\n'
+        '- Pergunte se ficou claro no final.'
+    ),
+    'urgent': (
+        'O cliente tem URGENCIA. Voce precisa:\n'
+        '- Ser DIRETO e EFICIENTE. Sem enrolacao.\n'
+        '- Tom firme e confiante, mostrando que esta no controle.\n'
+        '- Use: "Certo, vou resolver isso agora.", "Entendi, ja to vendo isso pra voce.", '
+        '"Pode deixar, vou tratar disso agora mesmo.".\n'
+        '- Frases curtissimas. Vá direto ao ponto.'
+    ),
+    'neutral': (
+        'Tom neutro, conversacional e amigavel. Voce precisa:\n'
+        '- Ser natural, como numa conversa entre conhecidos.\n'
+        '- Alternar entre afirmacoes e perguntas pra manter o dialogo vivo.\n'
+        '- Use: "Olha...", "Entao...", "Sabe o que e...", "E assim...".\n'
+        '- Demonstre interesse genuino. Pergunte, sugira, seja proativo.'
+    ),
+}

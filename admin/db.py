@@ -92,12 +92,12 @@ def get_tenant(tenant_id):
     return _query("SELECT * FROM tenants WHERE id = %s", (str(tenant_id),), fetch='one')
 
 
-def create_tenant(name, slug, settings='{}'):
+def create_tenant(name, slug, settings='{}', api_key=None):
     return _execute(
-        """INSERT INTO tenants (name, slug, settings)
-           VALUES (%s, %s, %s)
+        """INSERT INTO tenants (name, slug, settings, anthropic_api_key)
+           VALUES (%s, %s, %s, %s)
            RETURNING *""",
-        (name, slug, settings),
+        (name, slug, settings, api_key),
         returning=True,
     )
 
@@ -250,4 +250,179 @@ def get_messages_today(tenant_id):
            WHERE c.tenant_id = %s AND m.created_at::date = CURRENT_DATE""",
         (str(tenant_id),),
         fetch='one',
+    )
+
+
+# --- API Costs Dashboard ---
+
+def get_costs_today(tenant_id=None):
+    """Get total costs for today, optionally scoped to tenant."""
+    where = "WHERE created_at::date = CURRENT_DATE"
+    params = ()
+    if tenant_id:
+        where += " AND tenant_id = %s"
+        params = (str(tenant_id),)
+    return _query(
+        f"""SELECT
+                COALESCE(SUM(cost), 0) AS total_cost,
+                COUNT(*) AS total_calls,
+                COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens
+           FROM consumption_logs {where}""",
+        params, fetch='one',
+    )
+
+
+def get_costs_month(tenant_id=None):
+    """Get total costs for current month."""
+    where = "WHERE DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)"
+    params = ()
+    if tenant_id:
+        where += " AND tenant_id = %s"
+        params = (str(tenant_id),)
+    return _query(
+        f"""SELECT
+                COALESCE(SUM(cost), 0) AS total_cost,
+                COUNT(*) AS total_calls,
+                COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens
+           FROM consumption_logs {where}""",
+        params, fetch='one',
+    )
+
+
+def get_costs_by_operation(tenant_id=None, days=30):
+    """Breakdown by operation type (chat, tts, transcription)."""
+    where = "WHERE created_at > CURRENT_TIMESTAMP - make_interval(days => %s)"
+    params = [days]
+    if tenant_id:
+        where += " AND tenant_id = %s"
+        params.append(str(tenant_id))
+    return _query(
+        f"""SELECT operation, model,
+                   COUNT(*) AS calls,
+                   COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(cost), 0) AS total_cost
+           FROM consumption_logs {where}
+           GROUP BY operation, model
+           ORDER BY total_cost DESC""",
+        tuple(params),
+    )
+
+
+def get_daily_costs(tenant_id=None, days=30):
+    """Daily cost breakdown for charts."""
+    where = "WHERE created_at > CURRENT_TIMESTAMP - make_interval(days => %s)"
+    params = [days]
+    if tenant_id:
+        where += " AND tenant_id = %s"
+        params.append(str(tenant_id))
+    return _query(
+        f"""SELECT DATE(created_at) AS day,
+                   operation,
+                   COUNT(*) AS calls,
+                   COALESCE(SUM(cost), 0) AS total_cost
+           FROM consumption_logs {where}
+           GROUP BY DATE(created_at), operation
+           ORDER BY day DESC""",
+        tuple(params),
+    )
+
+
+def get_costs_by_tenant(days=30):
+    """Per-tenant cost breakdown (super_admin view)."""
+    return _query(
+        """SELECT t.id AS tenant_id, t.name AS tenant_name, t.slug,
+                  COUNT(*) AS calls,
+                  COALESCE(SUM(cl.cost), 0) AS total_cost,
+                  COALESCE(SUM(CASE WHEN cl.operation = 'chat' THEN cl.cost ELSE 0 END), 0) AS ai_cost,
+                  COALESCE(SUM(CASE WHEN cl.operation = 'tts' THEN cl.cost ELSE 0 END), 0) AS tts_cost,
+                  COALESCE(SUM(CASE WHEN cl.operation = 'transcription' THEN cl.cost ELSE 0 END), 0) AS transcription_cost,
+                  COUNT(DISTINCT cl.conversation_id) AS conversations
+           FROM consumption_logs cl
+           JOIN tenants t ON t.id = cl.tenant_id
+           WHERE cl.created_at > CURRENT_TIMESTAMP - make_interval(days => %s)
+           GROUP BY t.id, t.name, t.slug
+           ORDER BY total_cost DESC""",
+        (days,),
+    )
+
+
+def get_tenants_with_stats():
+    """Get all active tenants with usage stats for the clients page."""
+    return _query("""
+        SELECT t.id, t.name, t.slug, t.status, t.created_at,
+               COALESCE(wa_stats.instance_count, 0) AS instance_count,
+               COALESCE(msg_stats.msgs_today, 0) AS msgs_today,
+               COALESCE(cost_stats.cost_30d, 0) AS cost_30d,
+               COALESCE(cost_stats.calls_30d, 0) AS calls_30d,
+               COALESCE(cost_stats.ai_cost, 0) AS ai_cost,
+               COALESCE(cost_stats.tts_cost, 0) AS tts_cost,
+               COALESCE(cost_stats.stt_cost, 0) AS stt_cost,
+               COALESCE(conv_stats.total_conversations, 0) AS total_conversations
+        FROM tenants t
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS instance_count
+            FROM whatsapp_accounts wa
+            WHERE wa.tenant_id = t.id AND wa.status = 'active'
+        ) wa_stats ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS msgs_today
+            FROM messages m
+            JOIN conversations c ON c.id = m.conversation_id
+            WHERE c.tenant_id = t.id AND m.created_at::date = CURRENT_DATE
+        ) msg_stats ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT SUM(cost) AS cost_30d,
+                   COUNT(*) AS calls_30d,
+                   SUM(CASE WHEN operation = 'chat' THEN cost ELSE 0 END) AS ai_cost,
+                   SUM(CASE WHEN operation = 'tts' THEN cost ELSE 0 END) AS tts_cost,
+                   SUM(CASE WHEN operation = 'transcription' THEN cost ELSE 0 END) AS stt_cost
+            FROM consumption_logs cl
+            WHERE cl.tenant_id = t.id
+              AND cl.created_at > CURRENT_TIMESTAMP - INTERVAL '30 days'
+        ) cost_stats ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS total_conversations
+            FROM conversations c
+            WHERE c.tenant_id = t.id
+        ) conv_stats ON TRUE
+        WHERE t.status = 'active'
+        ORDER BY t.name
+    """)
+
+
+def get_consumption_by_operation(tenant_id, days=30):
+    """Get consumption breakdown by operation type for a specific tenant."""
+    return _query(
+        """SELECT operation, model,
+                  COUNT(*) AS calls,
+                  COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                  COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                  COALESCE(SUM(cost), 0) AS total_cost
+           FROM consumption_logs
+           WHERE tenant_id = %s
+             AND created_at > CURRENT_TIMESTAMP - make_interval(days => %s)
+           GROUP BY operation, model
+           ORDER BY total_cost DESC""",
+        (str(tenant_id), days),
+    )
+
+
+def get_projected_monthly_cost(tenant_id=None):
+    """Project monthly cost based on current month's average daily spend."""
+    where = "WHERE DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)"
+    params = ()
+    if tenant_id:
+        where += " AND tenant_id = %s"
+        params = (str(tenant_id),)
+    return _query(
+        f"""SELECT
+                COALESCE(SUM(cost), 0) AS month_so_far,
+                COUNT(DISTINCT DATE(created_at)) AS days_active,
+                EXTRACT(DAY FROM CURRENT_DATE) AS current_day,
+                EXTRACT(DAY FROM
+                    (DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month' - INTERVAL '1 day')
+                ) AS days_in_month
+           FROM consumption_logs {where}""",
+        params, fetch='one',
     )

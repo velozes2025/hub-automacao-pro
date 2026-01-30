@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+{% set active = "new-tenant" if not tenant else "clients" %}
+{% block title %}{{ 'Editar Cliente' if tenant else 'Novo Cliente' }} - Hub Automacao Pro{% endblock %}
+
+{% block content %}
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+    <a href="/admin/clients" style="color:#888;">&larr; Clientes</a>
+    <h2 style="color:#25d366;">{{ 'Editar Cliente' if tenant else 'Novo Cliente' }}</h2>
+    {% if tenant %}
+    <span style="color:#666;">{{ tenant.slug }}</span>
+    {% endif %}
+</div>
+
+<form method="POST" action="{{ '/admin/tenants/' + (tenant.id|string) if tenant else '/admin/tenants' }}">
+
+<!-- ============================================ -->
+<!-- SECAO 1: Dados da Empresa                    -->
+<!-- ============================================ -->
+<div class="card">
+    <h2>Dados da Empresa</h2>
+
+    <div class="form-row">
+        <div class="form-group">
+            <label>Nome da Empresa *</label>
+            <input type="text" name="name" value="{{ tenant.name if tenant else '' }}" required
+                   placeholder="Ex: QuantrexNow, Clinica Vida Nova">
+        </div>
+        {% if not tenant %}
+        <div class="form-group">
+            <label>Slug (identificador unico)</label>
+            <input type="text" name="slug" placeholder="auto-gerado se vazio"
+                   value="" pattern="[a-z0-9\-]+" title="Apenas letras minusculas, numeros e hifens">
+            <small style="color:#666;">Usado em URLs e integracao. Ex: quantrex-now</small>
+        </div>
+        {% endif %}
+    </div>
+
+    {% if tenant %}
+    <div class="form-row">
+        <div class="form-group">
+            <label>Status</label>
+            <select name="status">
+                <option value="active" {{ 'selected' if tenant.status == 'active' }}>Ativo</option>
+                <option value="inactive" {{ 'selected' if tenant.status == 'inactive' }}>Inativo</option>
+                <option value="suspended" {{ 'selected' if tenant.status == 'suspended' }}>Suspenso</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Slug</label>
+            <input type="text" value="{{ tenant.slug }}" disabled style="opacity:0.6;">
+            <small style="color:#666;">Nao editavel apos criacao</small>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="form-group">
+        <label>Chave API Anthropic (override)</label>
+        <input type="password" name="anthropic_api_key"
+               value="{{ tenant.anthropic_api_key or '' if tenant else '' }}"
+               placeholder="Deixe vazio para usar a chave global da plataforma"
+               autocomplete="off">
+        <small style="color:#666;">Se preenchida, este cliente usara sua propria chave (cobranca separada). Caso contrario, usa a chave da plataforma.</small>
+    </div>
+</div>
+
+<!-- ============================================ -->
+<!-- SECAO 2: Configuracao do Agente IA           -->
+<!-- ============================================ -->
+<div class="card">
+    <h2>Configuracao do Agente IA</h2>
+
+    <div class="form-group">
+        <label>System Prompt</label>
+        <textarea name="system_prompt" rows="8"
+                  placeholder="Instrucoes base para o agente IA. Ex: Voce e um assistente comercial da empresa X. Seu objetivo e qualificar leads e agendar reunioes...">{{ agent_config.system_prompt if agent_config else '' }}</textarea>
+        <small style="color:#666;">Este e o prompt principal que define o comportamento do agente. Seja especifico sobre o negocio, tom e objetivos.</small>
+    </div>
+
+    <div class="form-row">
+        <div class="form-group">
+            <label>Modelo de IA</label>
+            <select name="model">
+                <option value="claude-sonnet-4-20250514" {{ 'selected' if agent_config and agent_config.model == 'claude-sonnet-4-20250514' }}>Claude Sonnet 4 (recomendado)</option>
+                <option value="claude-opus-4-5-20251101" {{ 'selected' if agent_config and agent_config.model == 'claude-opus-4-5-20251101' }}>Claude Opus 4.5 (premium)</option>
+                <option value="claude-haiku-3-5-20241022" {{ 'selected' if agent_config and agent_config.model == 'claude-haiku-3-5-20241022' }}>Claude Haiku 3.5 (economico)</option>
+            </select>
+            <small style="color:#666;">Sonnet: melhor custo-beneficio. Opus: mais inteligente, mais caro. Haiku: mais barato, mais simples.</small>
+        </div>
+        <div class="form-group">
+            <label>Max Tokens por Resposta</label>
+            <input type="number" name="max_tokens" min="50" max="4096"
+                   value="{{ agent_config.max_tokens if agent_config else 150 }}">
+            <small style="color:#666;">Limite de tokens por resposta. 150 = ~2 frases. 300 = ~4 frases.</small>
+        </div>
+    </div>
+
+    <div class="form-row">
+        <div class="form-group">
+            <label>Msgs no Historico</label>
+            <input type="number" name="max_history_messages" min="2" max="50"
+                   value="{{ agent_config.max_history_messages if agent_config else 10 }}">
+            <small style="color:#666;">Quantas mensagens anteriores o agente ve. Mais = melhor contexto, mais custo.</small>
+        </div>
+        <div class="form-group">
+            <label>Ferramentas Habilitadas</label>
+            <div style="display:flex;flex-direction:column;gap:8px;margin-top:4px;">
+                {% set tools = agent_config.tools_enabled if agent_config and agent_config.tools_enabled else ['web_search'] %}
+                {% if tools is string %}
+                    {% set tools = [] %}
+                {% endif %}
+                <label style="display:flex;align-items:center;gap:6px;color:#ccc;font-size:0.9em;">
+                    <input type="checkbox" name="tools" value="web_search" {{ 'checked' if 'web_search' in tools }}>
+                    Busca na Web
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;color:#ccc;font-size:0.9em;">
+                    <input type="checkbox" name="tools" value="analyze_website" {{ 'checked' if 'analyze_website' in tools }}>
+                    Analise de Sites
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;color:#ccc;font-size:0.9em;">
+                    <input type="checkbox" name="tools" value="lookup_lead" {{ 'checked' if 'lookup_lead' in tools }}>
+                    Consulta de Lead
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;color:#ccc;font-size:0.9em;">
+                    <input type="checkbox" name="tools" value="update_lead_stage" {{ 'checked' if 'update_lead_stage' in tools }}>
+                    Atualizar Estagio do Lead
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;color:#ccc;font-size:0.9em;">
+                    <input type="checkbox" name="tools" value="check_availability" {{ 'checked' if 'check_availability' in tools }}>
+                    Consultar Disponibilidade
+                </label>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================ -->
+<!-- SECAO 3: Persona do Agente                   -->
+<!-- ============================================ -->
+<div class="card">
+    <h2>Persona do Agente</h2>
+    <small style="color:#666;display:block;margin-bottom:16px;">Define a identidade do agente: nome, funcao, tom de voz. Isso aparece no system prompt e afeta como o agente se comporta.</small>
+
+    {% set persona = {} %}
+    {% if agent_config and agent_config.persona %}
+        {% if agent_config.persona is mapping %}
+            {% set persona = agent_config.persona %}
+        {% endif %}
+    {% endif %}
+
+    <div class="form-row">
+        <div class="form-group">
+            <label>Nome da Persona</label>
+            <input type="text" name="persona_name" value="{{ persona.get('name', '') }}"
+                   placeholder="Ex: Oliver, Ana, Marcos">
+            <small style="color:#666;">Nome que o agente usa para se apresentar ao cliente.</small>
+        </div>
+        <div class="form-group">
+            <label>Funcao / Role</label>
+            <input type="text" name="persona_role" value="{{ persona.get('role', '') }}"
+                   placeholder="Ex: Assistente comercial, Consultor, Atendente">
+        </div>
+    </div>
+
+    <div class="form-row">
+        <div class="form-group">
+            <label>Tom de Voz</label>
+            <input type="text" name="persona_tone" value="{{ persona.get('tone', '') }}"
+                   placeholder="Ex: profissional, cordial, descontraido">
+            <small style="color:#666;">Adjetivos que definem o estilo de comunicacao.</small>
+        </div>
+        <div class="form-group">
+            <label>Genero</label>
+            <select name="persona_gender">
+                <option value="" {{ 'selected' if not persona.get('gender') }}>Nao definido</option>
+                <option value="male" {{ 'selected' if persona.get('gender') == 'male' }}>Masculino</option>
+                <option value="female" {{ 'selected' if persona.get('gender') == 'female' }}>Feminino</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="form-group">
+        <label>Faixa Etaria</label>
+        <select name="persona_age_range">
+            <option value="" {{ 'selected' if not persona.get('age_range') }}>Nao definida</option>
+            <option value="20-30" {{ 'selected' if persona.get('age_range') == '20-30' }}>20-30 anos (jovem)</option>
+            <option value="30-40" {{ 'selected' if persona.get('age_range') == '30-40' }}>30-40 anos</option>
+            <option value="40-50" {{ 'selected' if persona.get('age_range') == '40-50' }}>40-50 anos (experiente)</option>
+            <option value="50+" {{ 'selected' if persona.get('age_range') == '50+' }}>50+ anos (senior)</option>
+        </select>
+    </div>
+</div>
+
+<!-- ============================================ -->
+<!-- SECAO 4: Configuracao de Voz (TTS)           -->
+<!-- ============================================ -->
+<div class="card">
+    <h2>Configuracao de Voz (Audio)</h2>
+    <small style="color:#666;display:block;margin-bottom:16px;">Quando o cliente envia audio, o bot responde com audio. Configure a voz que o agente vai usar.</small>
+
+    {% set voice = persona.get('voice', {}) if persona else {} %}
+
+    <div class="form-row">
+        <div class="form-group">
+            <label>Resposta por Audio</label>
+            <select name="voice_enabled">
+                <option value="true" {{ 'selected' if voice.get('enabled') }}>Habilitado</option>
+                <option value="false" {{ 'selected' if not voice.get('enabled') }}>Desabilitado</option>
+            </select>
+            <small style="color:#666;">Se habilitado, respostas a audios serao em audio. Se desabilitado, responde em texto.</small>
+        </div>
+        <div class="form-group">
+            <label>Voz TTS</label>
+            <select name="voice_tts_voice">
+                <option value="onyx" {{ 'selected' if voice.get('tts_voice') == 'onyx' }}>Onyx (masculino, grave)</option>
+                <option value="echo" {{ 'selected' if voice.get('tts_voice') == 'echo' }}>Echo (masculino, medio)</option>
+                <option value="alloy" {{ 'selected' if voice.get('tts_voice') == 'alloy' }}>Alloy (neutro)</option>
+                <option value="fable" {{ 'selected' if voice.get('tts_voice') == 'fable' }}>Fable (narrativo)</option>
+                <option value="nova" {{ 'selected' if voice.get('tts_voice') == 'nova' }}>Nova (feminino, jovem)</option>
+                <option value="shimmer" {{ 'selected' if voice.get('tts_voice') == 'shimmer' }}>Shimmer (feminino, suave)</option>
+            </select>
+            <small style="color:#666;">Escolha a voz que combina com a persona do agente. Onyx = profissional masculino. Nova = jovem feminina.</small>
+        </div>
+    </div>
+
+    <div class="form-row">
+        <div class="form-group">
+            <label>Velocidade da Fala</label>
+            <input type="number" name="voice_speed" min="0.5" max="2.0" step="0.05"
+                   value="{{ voice.get('speed', 1.0) }}">
+            <small style="color:#666;">1.0 = normal. 0.9 = mais lento. 1.1 = mais rapido.</small>
+        </div>
+        <div class="form-group">
+            <label>Idioma Padrao</label>
+            <select name="voice_language">
+                <option value="pt" {{ 'selected' if voice.get('default_language', 'pt') == 'pt' }}>Portugues Brasileiro</option>
+                <option value="en" {{ 'selected' if voice.get('default_language') == 'en' }}>English</option>
+                <option value="es" {{ 'selected' if voice.get('default_language') == 'es' }}>Espanol</option>
+            </select>
+        </div>
+    </div>
+</div>
+
+<!-- Submit -->
+<div style="display:flex;gap:12px;margin-top:8px;margin-bottom:32px;">
+    <button type="submit" class="btn btn-primary" style="padding:12px 32px;font-size:1em;">
+        {{ 'Salvar Alteracoes' if tenant else 'Criar Cliente' }}
+    </button>
+    <a href="/admin/clients" class="btn" style="background:#333;padding:12px 24px;font-size:1em;">Cancelar</a>
+</div>
+
+</form>
+{% endblock %}

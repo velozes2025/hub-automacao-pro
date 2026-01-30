@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Hub Automacao Pro{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    {% block nav %}
+    <nav class="nav">
+        <span class="nav-brand">Hub Automacao Pro</span>
+        <a href="/admin/dashboard" class="{{ 'active' if active == 'dashboard' }}">Dashboard</a>
+        <a href="/admin/clients" class="{{ 'active' if active == 'clients' }}">Clientes</a>
+        <a href="/admin/api-costs" class="{{ 'active' if active == 'api-costs' }}">Custos API</a>
+        <a href="/admin/tenants/new" class="{{ 'active' if active == 'new-tenant' }}" style="color:#25d366;">+ Novo Cliente</a>
+        <a href="/admin/logout" style="margin-left:auto;color:#e74c3c;">Sair</a>
+    </nav>
+    {% endblock %}
+    <div class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        {% for cat, msg in messages %}
+        <div class="flash flash-{{ cat }}">{{ msg }}</div>
+        {% endfor %}
+        {% endif %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+    </div>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
