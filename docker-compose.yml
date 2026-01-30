@@ -116,6 +116,7 @@ services:
     ports:
       - "3000:3000"
     environment:
+      - DATABASE_URL=${DATABASE_URL:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
@@ -157,6 +158,7 @@ services:
     ports:
       - "9615:9615"
     environment:
+      - DATABASE_URL=${DATABASE_URL:-}
       - EVOLUTION_URL=http://evolution:8080
       - EVOLUTION_API_KEY=${EVOLUTION_API_KEY}
       - BOT_INTERNAL_URL=http://hub-bot:3000

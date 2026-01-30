@@ -18,6 +18,8 @@ class Config:
     EVOLUTION_URL = os.getenv('EVOLUTION_URL', 'http://evolution:8080')
 
     # --- PostgreSQL ---
+    # PRIMARY: Railway (via DATABASE_URL). FALLBACK: Docker (via DB_HOST/DB_PORT/...).
+    DATABASE_URL = os.getenv('DATABASE_URL', '')
     DB_HOST = os.getenv('DB_HOST', 'postgres')
     DB_PORT = int(os.getenv('DB_PORT', '5432'))
     DB_NAME = os.getenv('DB_NAME', 'hub_database')

@@ -517,6 +517,7 @@ if __name__ == '__main__':
         dbname=os.getenv('DB_NAME', 'hub_database'),
         user=os.getenv('DB_USER', 'hub_user'),
         password=os.getenv('DB_PASSWORD', ''),
+        database_url=os.getenv('DATABASE_URL', ''),
     )
     ensure_default_admin()
     log.info('Admin Panel started on port 9615')

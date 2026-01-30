@@ -1,4 +1,7 @@
-"""Admin panel database operations using the new platform schema."""
+"""Admin panel database operations using the new platform schema.
+
+Supports dual-pool failover: Railway (primary) + Docker (fallback).
+"""
 
 import logging
 import psycopg2
@@ -7,21 +10,85 @@ import psycopg2.extras
 
 log = logging.getLogger('admin.db')
 
-_pool = None
+_pool_primary = None   # Railway
+_pool_fallback = None  # Docker
 
 
-def init_pool(host, port, dbname, user, password):
-    global _pool
-    _pool = psycopg2.pool.ThreadedConnectionPool(
-        minconn=1, maxconn=5,
-        host=host, port=port, dbname=dbname, user=user, password=password,
-    )
-    log.info('Admin DB pool initialized')
+def init_pool(host, port, dbname, user, password, database_url=''):
+    """Initialize pools. database_url = Railway DSN (primary)."""
+    global _pool_primary, _pool_fallback
+    if database_url:
+        try:
+            _pool_primary = psycopg2.pool.ThreadedConnectionPool(
+                minconn=1, maxconn=5, dsn=database_url,
+            )
+            log.info('[DB] PRIMARY pool (Railway) initialized')
+        except Exception as e:
+            log.warning(f'[DB] PRIMARY pool (Railway) failed: {e}')
+            _pool_primary = None
+    try:
+        _pool_fallback = psycopg2.pool.ThreadedConnectionPool(
+            minconn=1, maxconn=5,
+            host=host, port=port, dbname=dbname, user=user, password=password,
+        )
+        log.info(f'[DB] {"FALLBACK" if _pool_primary else "ONLY"} pool (Docker) initialized')
+    except Exception as e:
+        if not _pool_primary:
+            raise
+        log.warning(f'[DB] FALLBACK pool (Docker) failed: {e}')
+
+
+def _ordered_pools():
+    pools = []
+    if _pool_primary:
+        pools.append(('Railway', _pool_primary))
+    if _pool_fallback:
+        pools.append(('Docker', _pool_fallback))
+    return pools
+
+
+def _with_failover(operation):
+    pools = _ordered_pools()
+    if not pools:
+        raise RuntimeError('[DB] No pools initialized')
+    last_error = None
+    for pool_name, pool in pools:
+        conn = None
+        try:
+            conn = pool.getconn()
+            return operation(conn)
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            last_error = e
+            log.warning(f'[DB-FAILOVER] {pool_name}: {e}')
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                try:
+                    pool.putconn(conn, close=True)
+                except Exception:
+                    pass
+                conn = None
+            continue
+        except Exception:
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            raise
+        finally:
+            if conn:
+                try:
+                    pool.putconn(conn)
+                except Exception:
+                    pass
+    raise last_error
 
 
 def _query(sql, params=None, fetch='all'):
-    conn = _pool.getconn()
-    try:
+    def _do(conn):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, params)
             if fetch == 'one':
@@ -31,16 +98,11 @@ def _query(sql, params=None, fetch='all'):
                 row = cur.fetchone()
                 return list(row.values())[0] if row else None
             return [dict(r) for r in cur.fetchall()]
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        _pool.putconn(conn)
+    return _with_failover(_do)
 
 
 def _execute(sql, params=None, returning=False):
-    conn = _pool.getconn()
-    try:
+    def _do(conn):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, params)
             conn.commit()
@@ -48,11 +110,7 @@ def _execute(sql, params=None, returning=False):
                 row = cur.fetchone()
                 return dict(row) if row else None
             return cur.rowcount
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        _pool.putconn(conn)
+    return _with_failover(_do)
 
 
 # --- Admin Users (v2 with RBAC) ---

@@ -4,6 +4,7 @@ ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 EVOLUTION_API_KEY = os.getenv('EVOLUTION_API_KEY')
 EVOLUTION_URL = os.getenv('EVOLUTION_URL', 'http://evolution:8080')
 
+DATABASE_URL = os.getenv('DATABASE_URL', '')
 DB_HOST = os.getenv('DB_HOST', 'postgres')
 DB_PORT = int(os.getenv('DB_PORT', '5432'))
 DB_NAME = os.getenv('DB_NAME', 'hub_database')

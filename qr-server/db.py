@@ -1,34 +1,93 @@
 import os
+import logging
 import psycopg2
 import psycopg2.pool
 import psycopg2.extras
 
-_pool = None
+log = logging.getLogger('qr.db')
+
+_pool_primary = None   # Railway
+_pool_fallback = None  # Docker
 
 
 def init_pool():
-    global _pool
-    _pool = psycopg2.pool.ThreadedConnectionPool(
-        minconn=2, maxconn=10,
-        host=os.getenv('DB_HOST', 'postgres'),
-        port=int(os.getenv('DB_PORT', '5432')),
-        dbname=os.getenv('DB_NAME', 'hub_database'),
-        user=os.getenv('DB_USER', 'hub_user'),
-        password=os.getenv('DB_PASSWORD', '')
-    )
+    global _pool_primary, _pool_fallback
+    dsn = os.getenv('DATABASE_URL', '')
+    if dsn:
+        try:
+            _pool_primary = psycopg2.pool.ThreadedConnectionPool(
+                minconn=2, maxconn=10, dsn=dsn,
+            )
+            log.info('[DB] PRIMARY pool (Railway) initialized')
+        except Exception as e:
+            log.warning(f'[DB] PRIMARY pool (Railway) failed: {e}')
+            _pool_primary = None
+    try:
+        _pool_fallback = psycopg2.pool.ThreadedConnectionPool(
+            minconn=2, maxconn=10,
+            host=os.getenv('DB_HOST', 'postgres'),
+            port=int(os.getenv('DB_PORT', '5432')),
+            dbname=os.getenv('DB_NAME', 'hub_database'),
+            user=os.getenv('DB_USER', 'hub_user'),
+            password=os.getenv('DB_PASSWORD', ''),
+        )
+        log.info(f'[DB] {"FALLBACK" if _pool_primary else "ONLY"} pool (Docker) initialized')
+    except Exception as e:
+        if not _pool_primary:
+            raise
+        log.warning(f'[DB] FALLBACK pool (Docker) failed: {e}')
+
+
+def _ordered_pools():
+    pools = []
+    if _pool_primary:
+        pools.append(('Railway', _pool_primary))
+    if _pool_fallback:
+        pools.append(('Docker', _pool_fallback))
+    return pools
 
 
 def _query(sql, params=None, fetch=True):
-    conn = _pool.getconn()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            if fetch:
-                return cur.fetchall()
-            conn.commit()
-            return None
-    finally:
-        _pool.putconn(conn)
+    pools = _ordered_pools()
+    last_error = None
+    for pool_name, pool in pools:
+        conn = None
+        try:
+            conn = pool.getconn()
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(sql, params)
+                if fetch:
+                    return cur.fetchall()
+                conn.commit()
+                return None
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            last_error = e
+            log.warning(f'[DB-FAILOVER] {pool_name}: {e}')
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                try:
+                    pool.putconn(conn, close=True)
+                except Exception:
+                    pass
+                conn = None
+            continue
+        except Exception:
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            raise
+        finally:
+            if conn:
+                try:
+                    pool.putconn(conn)
+                except Exception:
+                    pass
+    raise last_error
 
 
 def _query_one(sql, params=None):
