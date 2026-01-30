@@ -15,7 +15,7 @@ from app.ai.client import call_api, estimate_cost
 log = logging.getLogger('services.summary')
 
 SUMMARY_INTERVAL = 6  # messages (3 exchanges = 6 messages: 3 user + 3 assistant)
-SUMMARY_MODEL = 'claude-3-5-haiku-20241022'
+SUMMARY_MODEL = 'claude-3-haiku-20240307'
 
 SUMMARY_PROMPT = (
     'Analise a conversa abaixo e extraia um resumo estruturado em JSON:\n'

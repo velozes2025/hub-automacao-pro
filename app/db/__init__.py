@@ -1,8 +1,8 @@
 """Database connection layer with dual-write and failover.
 
-Both pools (Railway + Docker) stay synchronized:
+Both pools (Docker + Railway) stay synchronized:
 - WRITES go to BOTH databases (dual-write). If one fails, the other still works.
-- READS try PRIMARY (Railway) first, FALLBACK (Docker) second.
+- READS try PRIMARY (Docker) first, BACKUP (Railway) second.
 - Connection errors trigger automatic failover.
 
 This ensures zero data loss and zero downtime.
@@ -17,75 +17,75 @@ from app.config import config
 
 log = logging.getLogger('db')
 
-_pool_primary = None   # Railway (DATABASE_URL)
-_pool_fallback = None  # Docker (DB_HOST / DB_PORT / ...)
+_pool_docker = None    # Docker (DB_HOST / DB_PORT / ...) — PRIMARY
+_pool_railway = None   # Railway (DATABASE_URL) — BACKUP
 
 
 def init_pool():
     """Initialize connection pools. Safe to call multiple times."""
-    global _pool_primary, _pool_fallback
-    if _pool_primary is not None or _pool_fallback is not None:
+    global _pool_docker, _pool_railway
+    if _pool_docker is not None or _pool_railway is not None:
         return
 
-    # --- PRIMARY: Railway via DATABASE_URL ---
-    if config.DATABASE_URL:
-        try:
-            _pool_primary = psycopg2.pool.ThreadedConnectionPool(
-                minconn=2, maxconn=20, dsn=config.DATABASE_URL,
-            )
-            log.info('[DB] PRIMARY pool (Railway) initialized')
-        except Exception as e:
-            log.warning(f'[DB] PRIMARY pool (Railway) failed to init: {e}')
-            _pool_primary = None
-
-    # --- FALLBACK: Docker Postgres via individual vars ---
+    # --- PRIMARY: Docker Postgres (local, fast, all data) ---
     try:
-        _pool_fallback = psycopg2.pool.ThreadedConnectionPool(
+        _pool_docker = psycopg2.pool.ThreadedConnectionPool(
             minconn=2, maxconn=20,
             host=config.DB_HOST, port=config.DB_PORT,
             dbname=config.DB_NAME, user=config.DB_USER,
             password=config.DB_PASSWORD,
         )
-        label = 'FALLBACK' if _pool_primary else 'ONLY'
-        log.info(f'[DB] {label} pool (Docker) initialized')
+        log.info('[DB] PRIMARY pool (Docker) initialized')
     except Exception as e:
-        if _pool_primary:
-            log.warning(f'[DB] FALLBACK pool (Docker) failed: {e} — running Railway only')
-        else:
-            log.error('[DB] ALL pools failed to initialize')
-            raise
+        log.error(f'[DB] PRIMARY pool (Docker) failed to init: {e}')
+        _pool_docker = None
 
-    if not _pool_primary and not _pool_fallback:
+    # --- BACKUP: Railway via DATABASE_URL ---
+    if config.DATABASE_URL:
+        try:
+            _pool_railway = psycopg2.pool.ThreadedConnectionPool(
+                minconn=2, maxconn=20, dsn=config.DATABASE_URL,
+            )
+            label = 'BACKUP' if _pool_docker else 'ONLY'
+            log.info(f'[DB] {label} pool (Railway) initialized')
+        except Exception as e:
+            if _pool_docker:
+                log.warning(f'[DB] BACKUP pool (Railway) failed: {e} — running Docker only')
+            else:
+                log.error('[DB] ALL pools failed to initialize')
+                raise
+
+    if not _pool_docker and not _pool_railway:
         raise RuntimeError('[DB] No database pools available')
 
 
 def get_pool():
-    """Return the fallback (Docker) pool for direct access.
+    """Return the Docker pool for direct access.
 
     Used by lid.py to query Evolution API's internal schema
     (evolution."Contact", evolution."Message") which lives only
     in the Docker Postgres, never in Railway.
     """
-    return _pool_fallback
+    return _pool_docker
 
 
 def _ordered_pools():
-    """Return pools in priority order: primary first, fallback second."""
+    """Return pools in priority order: Docker first, Railway second."""
     pools = []
-    if _pool_primary:
-        pools.append(('Railway', _pool_primary))
-    if _pool_fallback:
-        pools.append(('Docker', _pool_fallback))
+    if _pool_docker:
+        pools.append(('Docker', _pool_docker))
+    if _pool_railway:
+        pools.append(('Railway', _pool_railway))
     return pools
 
 
 def _all_pools():
-    """Return all available pools (for dual-write)."""
+    """Return all available pools (for dual-write). Docker first."""
     pools = []
-    if _pool_primary:
-        pools.append(('Railway', _pool_primary))
-    if _pool_fallback:
-        pools.append(('Docker', _pool_fallback))
+    if _pool_docker:
+        pools.append(('Docker', _pool_docker))
+    if _pool_railway:
+        pools.append(('Railway', _pool_railway))
     return pools
 
 

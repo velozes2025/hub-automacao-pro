@@ -75,14 +75,21 @@ def process(conversation, agent_config, language='pt', api_key=None, source='tex
                                             spoken_mode=(source == 'audio'),
                                             sentiment=sentiment)
 
-    # Prepare message history (last N messages)
+    # Prepare message history (last N messages, merge consecutive same-role)
     raw_messages = conversation.get('messages', [])
     history = []
     for msg in raw_messages[-max_history:]:
         role = msg.get('role', 'user')
         content = msg.get('content', '')
         if role in ('user', 'assistant') and content:
-            history.append({'role': role, 'content': content})
+            # Merge consecutive same-role messages (API requires alternating roles)
+            if history and history[-1]['role'] == role:
+                history[-1]['content'] += '\n' + content
+            else:
+                history.append({'role': role, 'content': content})
+    # Ensure history starts with 'user' (API requirement)
+    while history and history[0]['role'] != 'user':
+        history.pop(0)
 
     # Get enabled tools
     import json
@@ -99,11 +106,20 @@ def process(conversation, agent_config, language='pt', api_key=None, source='tex
     }
 
     try:
-        # First call
+        log.info(f'[SUPERVISOR] model={model} history_len={len(history)} '
+                 f'tools={len(tool_defs) if tool_defs else 0} '
+                 f'prompt_len={len(system_prompt)} max_tokens={max_tokens}')
+        # First call (with 1 retry on failure)
         data = call_api(model, max_tokens, system_prompt, history,
                        tools=tool_defs if tool_defs else None, api_key=api_key)
         if not data:
-            raise Exception('API returned None')
+            log.warning('API returned None, retrying without tools...')
+            import time
+            time.sleep(0.5)
+            data = call_api(model, max_tokens, system_prompt, history,
+                           tools=None, api_key=api_key)
+        if not data:
+            raise Exception('API returned None after retry')
 
         usage = data.get('usage', {})
         total_input += usage.get('input_tokens', 0)
@@ -160,7 +176,19 @@ def process(conversation, agent_config, language='pt', api_key=None, source='tex
                 final_text += block.get('text', '')
 
         if not final_text:
-            raise Exception('Empty response from Claude')
+            # Retry once without tools on empty response
+            log.warning('Empty response, retrying without tools...')
+            data = call_api(model, max_tokens, system_prompt, history,
+                           tools=None, api_key=api_key)
+            if data:
+                usage = data.get('usage', {})
+                total_input += usage.get('input_tokens', 0)
+                total_output += usage.get('output_tokens', 0)
+                for block in data.get('content', []):
+                    if block.get('type') == 'text':
+                        final_text += block.get('text', '')
+            if not final_text:
+                raise Exception('Empty response from Claude after retry')
 
         return {
             'text': final_text.strip(),
@@ -185,4 +213,5 @@ def process(conversation, agent_config, language='pt', api_key=None, source='tex
             'cost': estimate_cost(model, total_input, total_output),
             'tool_calls': tool_calls,
             'sentiment': sentiment,
+            'is_fallback': True,
         }

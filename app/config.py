@@ -40,15 +40,15 @@ class Config:
     LID_RESOLVE_INTERVAL_SECONDS = 30
 
     # --- Message ---
-    MSG_SPLIT_MAX_CHARS = 800  # WhatsApp handles up to 65K; 800 = ~1 natural paragraph
+    MSG_SPLIT_MAX_CHARS = 1500  # WhatsApp handles up to 65K; 1500 = resposta completa sem cortar
     TYPING_DELAY_PER_CHAR_MS = 20
     TYPING_MIN_MS = 800
     TYPING_MAX_MS = 3000
 
     # --- AI Defaults ---
-    DEFAULT_MAX_TOKENS = 300
-    DEFAULT_MAX_TOKENS_AUDIO = 800  # v5.0: natural speech w/ hesitations, pauses, reformulations
-    DEFAULT_MAX_HISTORY = 10
+    DEFAULT_MAX_TOKENS = 500
+    DEFAULT_MAX_TOKENS_AUDIO = 1000  # v5.0: natural speech w/ hesitations, pauses, reformulations
+    DEFAULT_MAX_HISTORY = 20
     MAX_TOOL_ITERATIONS = 3
 
     # --- Redis ---

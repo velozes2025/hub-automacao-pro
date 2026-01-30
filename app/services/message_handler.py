@@ -310,23 +310,9 @@ def _process_incoming(instance_name, data):
     if isinstance(tenant_settings, str):
         tenant_settings = json.loads(tenant_settings) if tenant_settings else {}
 
-    # --- Slow response acknowledgment (2s timeout) ---
-    _ack_messages = {
-        'pt': 'Recebi! Estou analisando...',
-        'en': 'Got it! Analyzing...',
-        'es': 'Recibido! Estoy analizando...',
-    }
+    # --- Slow response acknowledgment (disabled — clean UX for clients) ---
     ack_sent = threading.Event()
-
-    def _send_ack():
-        if not ack_sent.is_set() and can_send:
-            ack_msg = _ack_messages.get(language, _ack_messages['pt'])
-            whatsapp.send_message(instance_name, send_phone, ack_msg)
-            ack_sent.set()
-            log.info(f'[ACK] Slow response ack sent to {send_phone}')
-
-    ack_timer = threading.Timer(2.0, _send_ack)
-    ack_timer.start()
+    ack_timer = None
 
     # --- Call AI (v6.0 engine wraps v5.1 with state machine + memory + reflection) ---
     try:
@@ -339,20 +325,24 @@ def _process_incoming(instance_name, data):
             tenant_settings=tenant_settings,
         )
     finally:
-        ack_timer.cancel()
+        if ack_timer:
+            ack_timer.cancel()
         ack_sent.set()  # Prevent late ack
 
     response_text = result['text']
 
-    # Save assistant response
-    conv_db.save_message(conversation_id, 'assistant', response_text, {
-        'model': result['model'],
-        'input_tokens': result['input_tokens'],
-        'output_tokens': result['output_tokens'],
-        'cost': result['cost'],
-        'tool_calls': result.get('tool_calls', []),
-        'source': source,
-    })
+    # Save assistant response (skip fallback responses to avoid polluting history)
+    if not result.get('is_fallback'):
+        conv_db.save_message(conversation_id, 'assistant', response_text, {
+            'model': result['model'],
+            'input_tokens': result['input_tokens'],
+            'output_tokens': result['output_tokens'],
+            'cost': result['cost'],
+            'tool_calls': result.get('tool_calls', []),
+            'source': source,
+        })
+    else:
+        log.warning(f'[FALLBACK] Not saving fallback response to history: "{response_text}"')
 
     # Log consumption (with v5.1 engine metadata)
     chat_operation = 'engine_v51_cache' if result.get('cache_hit') else 'chat'
