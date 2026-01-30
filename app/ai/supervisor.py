@@ -28,7 +28,8 @@ FALLBACK_RESPONSES = {
 _fallback_idx = 0
 
 
-def process(conversation, agent_config, language='pt', api_key=None, source='text'):
+def process(conversation, agent_config, language='pt', api_key=None, source='text',
+            system_prompt_override=None):
     """Run the supervisor loop and return the AI response.
 
     Args:
@@ -37,6 +38,7 @@ def process(conversation, agent_config, language='pt', api_key=None, source='tex
         language: detected language code
         api_key: optional per-tenant API key override
         source: 'text' or 'audio' — when 'audio', response is optimized for speech
+        system_prompt_override: optional pre-built system prompt (from v5.1 engine)
 
     Returns:
         dict with: text, input_tokens, output_tokens, model, cost, tool_calls
@@ -64,11 +66,14 @@ def process(conversation, agent_config, language='pt', api_key=None, source='tex
     if source == 'audio':
         log.info(f'[SENTIMENT] Detected: {sentiment} from: "{last_user_msg[:60]}"')
 
-    # Build system prompt
+    # Build system prompt (use override from v5.1 engine if provided)
     lead = conversation.get('lead')
-    system_prompt = build_system_prompt(agent_config, conversation, lead, language,
-                                        spoken_mode=(source == 'audio'),
-                                        sentiment=sentiment)
+    if system_prompt_override:
+        system_prompt = system_prompt_override
+    else:
+        system_prompt = build_system_prompt(agent_config, conversation, lead, language,
+                                            spoken_mode=(source == 'audio'),
+                                            sentiment=sentiment)
 
     # Prepare message history (last N messages)
     raw_messages = conversation.get('messages', [])

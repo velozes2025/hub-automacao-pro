@@ -49,6 +49,13 @@ class Config:
     DEFAULT_MAX_HISTORY = 10
     MAX_TOOL_ITERATIONS = 3
 
+    # --- OLIVER.CORE v5.1 Engine ---
+    ENGINE_V51_ENABLED = os.getenv('ENGINE_V51_ENABLED', 'true').lower() == 'true'
+    ENGINE_V51_CACHE_ENABLED = os.getenv('ENGINE_V51_CACHE_ENABLED', 'true').lower() == 'true'
+    ENGINE_V51_TOKEN_BASELINE = 1800  # avg tokens per v5.0 system prompt (for savings calc)
+    ENGINE_V51_MAX_COMPRESSED_HISTORY = 3  # exchanges kept in compressed history
+    DEFAULT_OLIVER_TIER = os.getenv('DEFAULT_OLIVER_TIER', 'tenant_free')
+
     # --- Pricing ---
     PRICING = {
         'claude-3-haiku-20240307': {'input': 0.00000025, 'output': 0.00000125},

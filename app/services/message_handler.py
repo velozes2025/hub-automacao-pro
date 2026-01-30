@@ -16,6 +16,7 @@ from app.db import leads as leads_db
 from app.db import queue as queue_db
 from app.db import consumption as consumption_db
 from app.ai import supervisor
+from app.ai.oliver_core import process_v51
 from app.ai.prompts import detect_language, is_real_name
 from app.channels import whatsapp, lid_resolver, sender, transcriber
 from app.services import lead_service
@@ -280,13 +281,19 @@ def _process_incoming(instance_name, data):
     # Per-tenant API key
     api_key = account.get('tenant_anthropic_key')
 
-    # --- Call AI supervisor ---
-    result = supervisor.process(
+    # --- Resolve tenant settings for v5.1 engine ---
+    tenant_settings = account.get('tenant_settings', {})
+    if isinstance(tenant_settings, str):
+        tenant_settings = json.loads(tenant_settings) if tenant_settings else {}
+
+    # --- Call AI (v5.1 engine for text, passthrough for audio) ---
+    result = process_v51(
         conversation=conversation_ctx,
         agent_config=agent_config,
         language=language,
         api_key=api_key,
         source=source,
+        tenant_settings=tenant_settings,
     )
 
     response_text = result['text']
@@ -301,7 +308,8 @@ def _process_incoming(instance_name, data):
         'source': source,
     })
 
-    # Log consumption
+    # Log consumption (with v5.1 engine metadata)
+    chat_operation = 'engine_v51_cache' if result.get('cache_hit') else 'chat'
     consumption_db.log_usage(
         tenant_id=tenant_id,
         model=result['model'],
@@ -309,8 +317,13 @@ def _process_incoming(instance_name, data):
         output_tokens=result['output_tokens'],
         cost=result['cost'],
         conversation_id=conversation_id,
-        operation='chat',
-        metadata={'tool_calls': len(result.get('tool_calls', []))},
+        operation=chat_operation,
+        metadata={
+            'tool_calls': len(result.get('tool_calls', [])),
+            'cache_hit': result.get('cache_hit', False),
+            'engine_version': result.get('engine_version', 'v5.0'),
+            'intent': result.get('intent', ''),
+        },
     )
 
     # --- Extract voice persona config (with sensible defaults) ---
