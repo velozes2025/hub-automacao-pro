@@ -211,14 +211,21 @@
         <div class="form-group">
             <label>Voz TTS</label>
             <select name="voice_tts_voice">
+                <option value="echo" {{ 'selected' if voice.get('tts_voice', 'echo') == 'echo' }}>Echo (masculino, jovem, carismatico)</option>
+                <option value="ash" {{ 'selected' if voice.get('tts_voice') == 'ash' }}>Ash (masculino, animado)</option>
+                <option value="verse" {{ 'selected' if voice.get('tts_voice') == 'verse' }}>Verse (masculino, expressivo)</option>
                 <option value="onyx" {{ 'selected' if voice.get('tts_voice') == 'onyx' }}>Onyx (masculino, grave)</option>
-                <option value="echo" {{ 'selected' if voice.get('tts_voice') == 'echo' }}>Echo (masculino, medio)</option>
+                <option value="ballad" {{ 'selected' if voice.get('tts_voice') == 'ballad' }}>Ballad (masculino, melodico)</option>
+                <option value="cedar" {{ 'selected' if voice.get('tts_voice') == 'cedar' }}>Cedar (masculino, natural)</option>
+                <option value="sage" {{ 'selected' if voice.get('tts_voice') == 'sage' }}>Sage (masculino, calmo)</option>
                 <option value="alloy" {{ 'selected' if voice.get('tts_voice') == 'alloy' }}>Alloy (neutro)</option>
-                <option value="fable" {{ 'selected' if voice.get('tts_voice') == 'fable' }}>Fable (narrativo)</option>
+                <option value="fable" {{ 'selected' if voice.get('tts_voice') == 'fable' }}>Fable (neutro, narrativo)</option>
+                <option value="coral" {{ 'selected' if voice.get('tts_voice') == 'coral' }}>Coral (feminino, caloroso)</option>
                 <option value="nova" {{ 'selected' if voice.get('tts_voice') == 'nova' }}>Nova (feminino, jovem)</option>
                 <option value="shimmer" {{ 'selected' if voice.get('tts_voice') == 'shimmer' }}>Shimmer (feminino, suave)</option>
+                <option value="marin" {{ 'selected' if voice.get('tts_voice') == 'marin' }}>Marin (feminino, natural)</option>
             </select>
-            <small style="color:#666;">Escolha a voz que combina com a persona do agente. Onyx = profissional masculino. Nova = jovem feminina.</small>
+            <small style="color:#666;">Echo = jovem carismatico (recomendado). Verse = expressivo. Onyx = profissional grave. Nova = jovem feminina.</small>
         </div>
     </div>
 

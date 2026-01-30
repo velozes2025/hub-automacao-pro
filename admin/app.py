@@ -184,7 +184,7 @@ def _build_persona_from_form():
     # Voice config (nested inside persona)
     voice = {}
     voice['enabled'] = request.form.get('voice_enabled') == 'true'
-    voice['tts_voice'] = request.form.get('voice_tts_voice', 'onyx')
+    voice['tts_voice'] = request.form.get('voice_tts_voice', 'echo')
     voice['speed'] = float(request.form.get('voice_speed', 1.0))
     voice['default_language'] = request.form.get('voice_language', 'pt')
     persona['voice'] = voice
@@ -425,6 +425,23 @@ def api_costs():
     # Per-tenant breakdown (super_admin only)
     by_tenant = admin_db.get_costs_by_tenant(days=30) if is_super else []
 
+    # Voice costs by provider (ElevenLabs vs OpenAI)
+    voice_by_provider = admin_db.get_voice_costs_by_provider(tenant_id=user_tenant, days=30)
+    voice_by_tenant = admin_db.get_voice_costs_by_tenant(days=30) if is_super else []
+    daily_voice = admin_db.get_daily_voice_costs(tenant_id=user_tenant, days=30)
+
+    # Aggregate voice daily data for chart
+    voice_chart_days = {}
+    for row in daily_voice:
+        day_str = str(row['day'])
+        if day_str not in voice_chart_days:
+            voice_chart_days[day_str] = {'day': day_str, 'elevenlabs': 0, 'openai': 0, 'total': 0}
+        provider = row['provider']
+        cost = float(row['total_cost'])
+        voice_chart_days[day_str][provider] = voice_chart_days[day_str].get(provider, 0) + cost
+        voice_chart_days[day_str]['total'] += cost
+    voice_chart_data = sorted(voice_chart_days.values(), key=lambda x: x['day'])
+
     # Aggregate daily data for chart
     chart_days = {}
     for row in daily:
@@ -444,6 +461,9 @@ def api_costs():
                            chart_data=chart_data,
                            projected_cost=round(projected_cost, 4),
                            by_tenant=by_tenant,
+                           voice_by_provider=voice_by_provider,
+                           voice_by_tenant=voice_by_tenant,
+                           voice_chart_data=voice_chart_data,
                            is_super_admin=is_super)
 
 

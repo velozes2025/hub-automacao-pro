@@ -408,6 +408,65 @@ def get_consumption_by_operation(tenant_id, days=30):
     )
 
 
+def get_voice_costs_by_provider(tenant_id=None, days=30):
+    """Breakdown of TTS costs by provider (ElevenLabs vs OpenAI)."""
+    where = "WHERE operation = 'tts' AND created_at > CURRENT_TIMESTAMP - make_interval(days => %s)"
+    params = [days]
+    if tenant_id:
+        where += " AND tenant_id = %s"
+        params.append(str(tenant_id))
+    return _query(
+        f"""SELECT
+                COALESCE(metadata->>'provider', 'openai') AS provider,
+                model,
+                COUNT(*) AS calls,
+                COALESCE(SUM(input_tokens), 0) AS total_chars,
+                COALESCE(SUM(cost), 0) AS total_cost
+           FROM consumption_logs {where}
+           GROUP BY COALESCE(metadata->>'provider', 'openai'), model
+           ORDER BY total_cost DESC""",
+        tuple(params),
+    )
+
+
+def get_voice_costs_by_tenant(days=30):
+    """Per-tenant TTS cost breakdown with provider split (super_admin)."""
+    return _query(
+        """SELECT t.id AS tenant_id, t.name AS tenant_name,
+                  COALESCE(cl.metadata->>'provider', 'openai') AS provider,
+                  cl.model,
+                  COUNT(*) AS calls,
+                  COALESCE(SUM(cl.input_tokens), 0) AS total_chars,
+                  COALESCE(SUM(cl.cost), 0) AS total_cost
+           FROM consumption_logs cl
+           JOIN tenants t ON t.id = cl.tenant_id
+           WHERE cl.operation = 'tts'
+             AND cl.created_at > CURRENT_TIMESTAMP - make_interval(days => %s)
+           GROUP BY t.id, t.name, COALESCE(cl.metadata->>'provider', 'openai'), cl.model
+           ORDER BY total_cost DESC""",
+        (days,),
+    )
+
+
+def get_daily_voice_costs(tenant_id=None, days=30):
+    """Daily voice cost breakdown by provider for chart."""
+    where = "WHERE operation = 'tts' AND created_at > CURRENT_TIMESTAMP - make_interval(days => %s)"
+    params = [days]
+    if tenant_id:
+        where += " AND tenant_id = %s"
+        params.append(str(tenant_id))
+    return _query(
+        f"""SELECT DATE(created_at) AS day,
+                   COALESCE(metadata->>'provider', 'openai') AS provider,
+                   COUNT(*) AS calls,
+                   COALESCE(SUM(cost), 0) AS total_cost
+           FROM consumption_logs {where}
+           GROUP BY DATE(created_at), COALESCE(metadata->>'provider', 'openai')
+           ORDER BY day DESC""",
+        tuple(params),
+    )
+
+
 def get_projected_monthly_cost(tenant_id=None):
     """Project monthly cost based on current month's average daily spend."""
     where = "WHERE DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)"

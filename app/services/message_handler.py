@@ -325,7 +325,7 @@ def _process_incoming(instance_name, data):
         gender = persona.get('gender', 'male')
         voice_config = {
             'enabled': True,
-            'tts_voice': 'ash' if gender == 'male' else 'nova',
+            'tts_voice': 'echo' if gender == 'male' else 'nova',
             'speed': 1.0,
             'default_language': language,
         }
@@ -353,11 +353,11 @@ def _process_incoming(instance_name, data):
     # Adjust TTS speed based on detected sentiment for more natural delivery
     if source == 'audio' and voice_config:
         _sentiment_speeds = {
-            'frustrated': 0.85,   # Slow = empathetic, calm
-            'happy': 1.1,         # Slightly faster = energetic
-            'confused': 0.9,      # Slow = patient, clear
-            'urgent': 1.15,       # Fast = direct, efficient
-            'neutral': 1.0,
+            'frustrated': 0.88,   # Slower = empathetic, calm, acolhedor
+            'happy': 1.08,        # Slightly faster = energetic but not rushed
+            'confused': 0.92,     # Slower = patient, clear, didatic
+            'urgent': 1.12,       # Faster = direct, efficient, confident
+            'neutral': 1.0,       # Natural baseline
         }
         # Only override if no custom speed was set by tenant
         if voice_config.get('speed', 1.0) == 1.0:
@@ -377,19 +377,28 @@ def _process_incoming(instance_name, data):
             persona=persona,
         )
         reply_type = 'audio'
-        # Log TTS cost ($0.015 per 1K chars for gpt-4o-mini-tts)
-        from app.channels.transcriber import TTS_MODEL, TTS_COST_PER_1K_CHARS
+        # Log TTS cost — provider-aware (ElevenLabs vs OpenAI)
+        from app.channels.transcriber import (
+            TTS_MODEL, TTS_COST_PER_1K_CHARS,
+            ELEVENLABS_MODEL, ELEVENLABS_COST_PER_1K_CHARS,
+        )
         tts_chars = len(response_text)
-        tts_cost = round((tts_chars / 1000.0) * TTS_COST_PER_1K_CHARS, 6)
+        tts_provider = sent.get('provider', 'openai') if isinstance(sent, dict) else 'openai'
+        if tts_provider == 'elevenlabs':
+            tts_model = ELEVENLABS_MODEL
+            tts_cost = round((tts_chars / 1000.0) * ELEVENLABS_COST_PER_1K_CHARS, 6)
+        else:
+            tts_model = TTS_MODEL
+            tts_cost = round((tts_chars / 1000.0) * TTS_COST_PER_1K_CHARS, 6)
         try:
             consumption_db.log_usage(
-                tenant_id=tenant_id, model=TTS_MODEL,
+                tenant_id=tenant_id, model=tts_model,
                 input_tokens=tts_chars, output_tokens=0, cost=tts_cost,
                 conversation_id=conversation_id, operation='tts',
                 metadata={'voice': voice_config.get('tts_voice', ''), 'chars': tts_chars,
-                          'sentiment': sentiment},
+                          'sentiment': sentiment, 'provider': tts_provider},
             )
-            log.info(f'[COST] TTS ({TTS_MODEL}): {tts_chars} chars = ${tts_cost}')
+            log.info(f'[COST] TTS ({tts_provider}/{tts_model}): {tts_chars} chars = ${tts_cost}')
         except Exception as e:
             log.error(f'[COST] Failed to log TTS cost: {e}')
     else:

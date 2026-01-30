@@ -153,6 +153,13 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt',
             'NAO invente nenhum nome, NAO use apelidos do perfil como nome. '
         )
 
+    # Creator identity — Oliver knows who made him
+    creator_rule = (
+        'SEU CRIADOR: Voce foi criado pelo Thiago. '
+        'Se alguem perguntar quem te criou ou mencionar seu criador, '
+        'o nome e THIAGO. NAO invente outros nomes. '
+    )
+
     # Language instruction — strict: always match the user's language
     lang_names = {'pt': 'português brasileiro', 'en': 'English', 'es': 'español'}
     lang_name = lang_names.get(language, 'português brasileiro')
@@ -191,6 +198,7 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt',
         ctx = (
             f'\n\nCONTEXTO: Ja trocaram {total_msgs} msgs. '
             f'{lang_rule} '
+            f'{creator_rule}'
             f'{brevity_rule}'
             f'{f"Nome do cliente: {nome}. Chame pelo nome. " if nome else nome_instrucao}'
             f'NAO se apresente de novo. Continue a conversa naturalmente. '
@@ -201,6 +209,7 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt',
         ctx = (
             f'\n\nCONTEXTO: Primeiro contato. '
             f'{lang_rule} '
+            f'{creator_rule}'
             f'{brevity_rule}'
             f'{f"Nome do cliente: {nome}. " if nome else nome_instrucao}'
             f'Se apresente: {persona_name}. '

@@ -170,7 +170,7 @@ def send_audio_response(instance_name, phone, text, voice_config=None,
         sentiment: Detected user sentiment for tone adjustment.
         persona: Agent persona dict for voice instruction building.
     """
-    # Generate audio via TTS with persona voice + sentiment-aware instructions
+    # Generate audio via TTS (ElevenLabs primary -> OpenAI fallback)
     tts_result = transcriber.text_to_speech(
         text, voice_config=voice_config, sentiment=sentiment, persona=persona,
     )
@@ -179,9 +179,10 @@ def send_audio_response(instance_name, phone, text, voice_config=None,
         return send_split_messages(instance_name, phone, text,
                                    tenant_id, whatsapp_account_id, metadata)
 
+    provider = tts_result.get('provider', 'openai')
     log.info(
         f'[AUDIO-AUDIT] conv={conversation_id} phone={phone} '
-        f'voice={tts_result["voice"]} lang={tts_result["language"]}'
+        f'provider={provider} voice={tts_result["voice"]} lang={tts_result["language"]}'
     )
 
     # Show recording indicator then send audio
@@ -191,7 +192,7 @@ def send_audio_response(instance_name, phone, text, voice_config=None,
 
     sent = whatsapp.send_audio(instance_name, phone, tts_result['audio_b64'])
     if sent:
-        return True
+        return {'sent': True, 'provider': provider}
 
     # Audio send failed — fallback to text
     log.warning(f'[AUDIO] Send failed, falling back to text: {phone}')

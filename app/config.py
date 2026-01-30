@@ -6,8 +6,12 @@ class Config:
     ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
     DEFAULT_MODEL = os.getenv('DEFAULT_MODEL', 'claude-sonnet-4-20250514')
 
-    # --- OpenAI (Whisper) ---
+    # --- OpenAI (Whisper + TTS fallback) ---
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+
+    # --- ElevenLabs (Primary TTS) ---
+    ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY', '')
+    ELEVENLABS_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID', 'pNInz6obpgDQGcFmaJgB')  # "Adam" - young male
 
     # --- Evolution API (WhatsApp) ---
     EVOLUTION_API_KEY = os.getenv('EVOLUTION_API_KEY', '')

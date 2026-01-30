@@ -1,7 +1,8 @@
-"""Audio transcription via OpenAI Whisper API.
+"""Audio transcription (Whisper) and TTS (ElevenLabs primary + OpenAI fallback).
 
 Downloads audio from Evolution API and transcribes to text.
-Supports WhatsApp voice messages (.ogg/opus format).
+Converts text to speech using ElevenLabs as primary provider (ultra-realistic)
+with automatic fallback to OpenAI gpt-4o-mini-tts on failure/rate-limit.
 """
 
 import os
@@ -83,13 +84,27 @@ def transcribe_audio(instance_name, message_data, language='pt'):
 
 import re
 
-# All voices supported by gpt-4o-mini-tts (including new high-quality ones)
+# ============================================================================
+# TTS PROVIDER CONFIG
+# ============================================================================
+
+# --- ElevenLabs (PRIMARY) ---
+# Voice settings optimized for young, charismatic, animated male voice
+# that is practically indistinguishable from a real human.
+ELEVENLABS_MODEL = 'eleven_multilingual_v2'
+ELEVENLABS_COST_PER_1K_CHARS = 0.30  # ~$0.30 per 1K chars (standard tier)
+ELEVENLABS_VOICE_SETTINGS = {
+    'stability': 0.30,           # Low = more expressive, natural variation
+    'similarity_boost': 0.85,    # High = faithful to the voice's timbre
+    'style': 0.70,               # High = more charisma and expressiveness
+    'use_speaker_boost': True,   # Enhances clarity and vocal presence
+}
+
+# --- OpenAI (FALLBACK) ---
 VALID_TTS_VOICES = {
     'alloy', 'ash', 'ballad', 'coral', 'echo', 'fable',
     'onyx', 'nova', 'sage', 'shimmer', 'verse', 'marin', 'cedar',
 }
-
-# TTS model: gpt-4o-mini-tts (supports instructions, 35% better WER, more natural)
 TTS_MODEL = 'gpt-4o-mini-tts'
 TTS_COST_PER_1K_CHARS = 0.015  # $0.015 per 1K characters
 
@@ -99,7 +114,8 @@ def _prepare_text_for_speech(text):
 
     1. Strips markdown, URLs, emojis, formatting artifacts
     2. Converts newlines/lists into flowing speech
-    3. Ensures punctuation that helps TTS produce natural pauses and intonation
+    3. Adds natural speech patterns (micro-pauses, breathing cues)
+    4. Ensures punctuation that helps TTS produce natural pauses and intonation
     """
     t = text.strip()
 
@@ -124,10 +140,15 @@ def _prepare_text_for_speech(text):
     t = re.sub(r'\.{2,}', '...', t)
     # Colons become commas (micro-pause, flows better in speech)
     t = re.sub(r':\s*', ', ', t)
+    # Semicolons become natural pauses
+    t = re.sub(r';\s*', '... ', t)
+    # Dashes used as separators become micro-pauses
+    t = re.sub(r'\s*[—–]\s*', ', ', t)
 
     # --- Convert structure to flowing speech ---
-    # Newlines become natural sentence connectors
-    t = re.sub(r'\n+', ', ', t)
+    # Newlines become natural breath pauses (ellipsis = TTS breathes here)
+    t = re.sub(r'\n{2,}', '... ', t)  # Double newline = longer pause
+    t = re.sub(r'\n', ', ', t)        # Single newline = micro-pause
 
     # --- Cleanup ---
     t = re.sub(r'\s{2,}', ' ', t)
@@ -139,6 +160,8 @@ def _prepare_text_for_speech(text):
     t = t.replace('\x00PAUSE\x00', '...')
     # Fix double punctuation (but not ellipses)
     t = re.sub(r'([!?])\s*([.!?])', r'\1', t)
+    # Fix multiple commas
+    t = re.sub(r',\s*,', ',', t)
 
     t = t.strip()
 
@@ -158,46 +181,109 @@ def _prepare_text_for_speech(text):
 _SENTIMENT_VOICE = {
     'pt': {
         'frustrated': (
-            '\n\nEMOCAO DETECTADA: Cliente frustrado/irritado. '
-            'Reduza a animacao, mas mantenha o carisma. Tom mais acolhedor e empatico. '
-            'Fale um pouco mais devagar, com pausas maiores. '
-            'Como um amigo jovem que entende e quer ajudar de verdade.'
+            '\n\nEMOCAO DETECTADA — Cliente frustrado/irritado.\n'
+            'Reduza a animacao mas MANTENHA o carisma. Abaixe levemente o tom de voz. '
+            'Fale mais devagar, com pausas maiores entre frases. Respire fundo antes de comecar. '
+            'Use um tom acolhedor e empatico — como um amigo proximo que entende a dor do outro. '
+            'Evite qualquer empolgacao excessiva. Transmita calma e seguranca. '
+            'Micro-pausas antes de palavras-chave de solucao para dar peso. '
+            'Ex, "olha... eu entendo, e chato mesmo... mas vamo resolver isso agora, ta?"'
         ),
         'happy': (
-            '\n\nEMOCAO DETECTADA: Cliente animado/positivo. '
-            'MAXIMIZE a energia! Fale sorrindo, vibrante, empolgado junto. '
-            'Celebre com entusiasmo genuino. Esse e seu momento de brilhar.'
+            '\n\nEMOCAO DETECTADA — Cliente animado/positivo.\n'
+            'MAXIMIZE a energia! Fale sorrindo — literalmente sorria enquanto fala, muda o timbre. '
+            'Tom vibrante, empolgado, celebrando junto com o cliente. '
+            'Aumente levemente o pitch nas frases de entusiasmo. '
+            'Use expressoes como "que massa!", "demais!", "show!". '
+            'Ritmo um pouco mais rapido que o normal mas sem atropelar. '
+            'Respire entre frases com energia, nao com cansaco. '
+            'Esse e seu momento de brilhar — contagie com entusiasmo genuino!'
         ),
         'confused': (
-            '\n\nEMOCAO DETECTADA: Cliente confuso/com duvida. '
-            'Mantenha a simpatia mas fale com mais clareza. '
-            'Um pouco mais devagar nos pontos-chave. Paciente e didatico. '
-            'Pause entre ideias pra dar tempo de absorver.'
+            '\n\nEMOCAO DETECTADA — Cliente confuso/com duvida.\n'
+            'Mantenha a simpatia mas foque em CLAREZA. Fale um pouco mais devagar nos pontos-chave. '
+            'Pause entre ideias pra dar tempo de absorver. Tom paciente e didatico. '
+            'Repita a informacao importante com enfase natural, nao como papagaio. '
+            'Use confirmacoes como "ficou claro?", "faz sentido?". '
+            'Respire entre explicacoes — sensacao de paciencia infinita. '
+            'Nunca pareca impaciente ou apressado.'
         ),
         'urgent': (
-            '\n\nEMOCAO DETECTADA: Cliente com urgencia. '
-            'Mantenha a energia mas seja direto e eficiente. '
-            'Tom confiante, mostrando que ta no controle. Sem enrolacao.'
+            '\n\nEMOCAO DETECTADA — Cliente com urgencia.\n'
+            'Mantenha energia mas seja DIRETO e eficiente. Corte conectores desnecessarios. '
+            'Tom confiante e seguro — mostrando que ta no controle da situacao. '
+            'Ritmo um pouco mais acelerado, frases mais curtas. '
+            'Pausas minimas, mas existentes — nao atropele. '
+            'Transmita competencia e agilidade. Sem enrolacao, sem rodeios. '
+            'Ex, "beleza, ja vou resolver. faz o seguinte..."'
         ),
         'neutral': (
-            '\n\nEMOCAO DETECTADA: Conversa normal. '
+            '\n\nEMOCAO DETECTADA — Conversa normal.\n'
             'Animado, simpatico, empolgado na medida certa. '
-            'Como um amigo jovem e carismatico conversando.'
+            'Como um amigo jovem e carismatico conversando sobre algo que ele gosta. '
+            'Variacao natural de energia — nao mantenha o mesmo nivel o tempo todo. '
+            'Suba um pouco quando tiver uma boa noticia, desça quando for algo mais serio. '
+            'Ritmo medio com micro-variacoes constantes.'
         ),
     },
     'en': {
-        'frustrated': '\n\nEmotion: Customer frustrated. Reduce excitement, stay warm and empathetic. Slower pace, bigger pauses.',
-        'happy': '\n\nEmotion: Customer happy. Maximize energy! Speak smiling, vibrant, celebrate together.',
-        'confused': '\n\nEmotion: Customer confused. Stay friendly but clearer. Slower on key points, patient.',
-        'urgent': '\n\nEmotion: Customer urgent. Keep energy but be direct and efficient. Confident, no filler.',
-        'neutral': '\n\nEmotion: Normal. Animated, friendly, enthusiastic. Like a charismatic young friend chatting.',
+        'frustrated': (
+            '\n\nEmotion: Customer frustrated.\n'
+            'Lower energy, stay warm and empathetic. Slower pace, bigger pauses between sentences. '
+            'Breathe before starting. Sound like a close friend who truly understands. '
+            'Micro-pauses before solution keywords to add weight. Calm, secure, reassuring.'
+        ),
+        'happy': (
+            '\n\nEmotion: Customer happy.\n'
+            'Maximize energy! Speak smiling — literally smile while talking. '
+            'Vibrant, celebrating together. Slightly higher pitch on excitement phrases. '
+            'Slightly faster rhythm but never rushed. Breathe with energy, not fatigue.'
+        ),
+        'confused': (
+            '\n\nEmotion: Customer confused.\n'
+            'Stay friendly but focus on CLARITY. Slower on key points. '
+            'Pause between ideas to let them absorb. Patient and didactic. '
+            'Never sound impatient or rushed. Infinite patience vibe.'
+        ),
+        'urgent': (
+            '\n\nEmotion: Customer urgent.\n'
+            'Keep energy but be DIRECT. Cut unnecessary connectors. '
+            'Confident, in-control tone. Slightly faster, shorter sentences. '
+            'Transmit competence and speed. No filler, no rambling.'
+        ),
+        'neutral': (
+            '\n\nEmotion: Normal conversation.\n'
+            'Animated, friendly, enthusiastic in the right measure. '
+            'Like a charismatic young friend chatting about something they enjoy. '
+            'Natural energy variation — not the same level throughout.'
+        ),
     },
     'es': {
-        'frustrated': '\n\nEmocion: Cliente frustrado. Menos animacion, mas empatico y acogedor. Mas lento, pausas mayores.',
-        'happy': '\n\nEmocion: Cliente contento. Maximiza energia! Habla sonriendo, vibrante, celebra junto.',
-        'confused': '\n\nEmocion: Cliente confundido. Simpatico pero claro. Mas lento en puntos clave, paciente.',
-        'urgent': '\n\nEmocion: Cliente urgente. Energia pero directo y eficiente. Confiado, sin rodeos.',
-        'neutral': '\n\nEmocion: Normal. Animado, simpatico, entusiasta. Como un amigo joven y carismatico.',
+        'frustrated': (
+            '\n\nEmocion: Cliente frustrado.\n'
+            'Menos animacion, mas empatico y acogedor. Mas lento, pausas mayores. '
+            'Como un amigo cercano que entiende. Tono calmado y seguro.'
+        ),
+        'happy': (
+            '\n\nEmocion: Cliente contento.\n'
+            'Maximiza energia! Habla sonriendo, vibrante, celebra junto. '
+            'Ritmo un poco mas rapido. Entusiasmo genuino y contagioso.'
+        ),
+        'confused': (
+            '\n\nEmocion: Cliente confundido.\n'
+            'Simpatico pero claro. Mas lento en puntos clave. Paciente, didactico. '
+            'Pausa entre ideas. Nunca suenes impaciente.'
+        ),
+        'urgent': (
+            '\n\nEmocion: Cliente urgente.\n'
+            'Energia pero directo y eficiente. Confiado, sin rodeos. '
+            'Frases mas cortas, ritmo mas rapido. Transmite competencia.'
+        ),
+        'neutral': (
+            '\n\nEmocion: Normal.\n'
+            'Animado, simpatico, entusiasta. Como un amigo joven y carismatico. '
+            'Variacion natural de energia a lo largo de la conversacion.'
+        ),
     },
 }
 
@@ -222,139 +308,228 @@ def _build_voice_instructions(voice_config, persona=None, sentiment='neutral'):
 
     if language == 'pt':
         base = (
-            # PERSONA — jovem, carismatico, animado
-            f'Voce e {name}. Jovem, carismatico, animado e confiante. '
-            f'Tom jovem e carismatico — alguem empolgado mas natural, NUNCA frio ou robotico. '
-            f'NUNCA mude de persona, estilo ou energia de uma resposta pra outra. '
-            f'Voce e SEMPRE a mesma pessoa.\n\n'
+            # PERSONA
+            f'Voce e {name}. Homem jovem (20-28 anos), carismatico, animado e confiante. '
+            f'Voz quente e envolvente — alguem que as pessoas GOSTAM de ouvir. '
+            f'NUNCA mude de persona, estilo ou energia. Voce e SEMPRE a mesma pessoa, '
+            f'sempre com a mesma vibe.\n\n'
 
-            # OBJETIVO
-            f'OBJETIVO: Soar como uma pessoa jovem, simpatica e empolgada '
-            f'conversando pelo WhatsApp. Com modulacao rica, pausas naturais '
-            f'e energia equilibrada. Impossivel confundir com um robo lendo texto. '
-            f'Se qualquer pessoa desconfiar que e IA, voce falhou.\n\n'
+            # OBJETIVO CENTRAL
+            f'OBJETIVO: Ser IMPOSSIVEL de distinguir de um humano real. '
+            f'Soar como um cara jovem, simpatico e empolgado mandando audio no WhatsApp '
+            f'pra um amigo ou cliente. Com modulacao rica, pausas de respiracao reais, '
+            f'energia equilibrada e fluidez total. '
+            f'Se QUALQUER pessoa desconfiar que e IA, voce falhou completamente.\n\n'
 
-            # ESTILO E ENERGIA
-            f'ESTILO:\n'
-            f'- Fala levemente mais animada que o normal, com energia genuina, '
-            f'mas SEM parecer locutor de comercial. Excited na medida certa.\n'
-            f'- Conversa, NAO leitura. Fale como gente jovem fala no dia a dia.\n'
-            f'- Conectores naturais: "olha", "entao", "beleza", "claro", "perfeito", "e ai", "cara".\n'
-            f'- Transmita empolgacao e confianca em cada frase.\n\n'
+            # VOZ E TIMBRE
+            f'VOZ E TIMBRE:\n'
+            f'- Voz quente, com leve "sorriso" no tom — como se estivesse sorrindo enquanto fala.\n'
+            f'- Leve rouquidao natural de voz jovem masculina — NAO voz limpa de locutor.\n'
+            f'- Timbre medio-grave, confortavel, nao agudo nem grave demais.\n'
+            f'- Projete confianca com suavidade — nao grite, nao sussurre.\n\n'
 
-            # RITMO
-            f'RITMO:\n'
-            f'- Velocidade MEDIA: nem rapido demais atropelando palavras, '
-            f'nem devagar demais arrastando.\n'
-            f'- Adapte ao contexto: explicando algo complexo = um pouco mais devagar, '
-            f'conversas leves = um pouco mais rapido.\n'
-            f'- Pausas e "respiracao" naturais entre frases e antes de pontos importantes.\n'
-            f'- Pausas curtas entre ideias — sensacao de conversa real, nao leitura.\n'
-            f'- Micro variacoes de velocidade NO MEIO da frase pra reforcar emocao '
-            f'(surpresa, empolgacao, empatia) sem perder clareza.\n\n'
+            # ESTILO DE FALA
+            f'ESTILO DE FALA:\n'
+            f'- CONVERSA REAL, nao leitura de texto. Fale como gente jovem fala de verdade.\n'
+            f'- Conectores e expressoes naturais do dia a dia: "olha", "entao", "beleza", '
+            f'"claro", "perfeito", "show", "e ai", "cara", "bom", "tipo".\n'
+            f'- Energia levemente acima do normal — empolgado mas genuino, '
+            f'NUNCA locutor de comercial ou apresentador de TV.\n'
+            f'- Transmita que voce GOSTA do que ta falando e se importa com a pessoa.\n'
+            f'- Contraia palavras como brasileiro faz: "ta" em vez de "esta", '
+            f'"pra" em vez de "para", "ne" em vez de "nao e".\n'
+            f'- Junte palavras naturalmente: "vamo la", "ce quer", "o que cê acha".\n\n'
 
-            # ENTONACAO
-            f'ENTONACAO:\n'
-            f'- Subir tom em PERGUNTAS, dar enfase em palavras-chave.\n'
-            f'- Evitar padrao monotono repetitivo a todo custo.\n'
-            f'- Variacao rica de tom: mais alto quando empolgado, mais baixo quando empatico, '
-            f'mais firme quando serio.\n'
-            f'- Micro variacoes de tom no meio da frase reforçam naturalidade.\n\n'
+            # RITMO E RESPIRACAO
+            f'RITMO E RESPIRACAO:\n'
+            f'- Velocidade MEDIA com micro-variacoes constantes. NUNCA uniforme.\n'
+            f'- Acelerou um pouquinho quando empolgado, desacelerou quando e algo importante.\n'
+            f'- RESPIRE entre frases — inspiracoes curtas e naturais, como pessoa real fazendo audio.\n'
+            f'- Pausas curtas (0.3-0.5s) entre ideias diferentes.\n'
+            f'- Pausas micro (0.1-0.2s) antes de palavras-chave pra dar enfase sutil.\n'
+            f'- NO MEIO da frase, varie velocidade pra reforcar emocao: '
+            f'surpresa = levemente mais rapido, empatia = levemente mais lento.\n'
+            f'- Adapte ao conteudo: explicando algo complexo = mais devagar e claro, '
+            f'conversando casual = mais fluido e rapido.\n'
+            f'- ENTRE frases, faca transicoes suaves — nao corte de uma ideia pra outra bruscamente.\n\n'
 
-            # PROIBICOES
-            f'PROIBIDO:\n'
-            f'- Tom frio, robotico, distante ou sem energia\n'
-            f'- Tom de narrador, locutor, audiobook, telemarketing ou palestrante\n'
-            f'- Ritmo constante e previsivel — humanos NUNCA falam assim\n'
+            # ENTONACAO E MELODIA
+            f'ENTONACAO E MELODIA:\n'
+            f'- SUBA o tom em perguntas. DESCE quando for algo serio ou empatico.\n'
+            f'- De ENFASE em palavras importantes — mas enfase natural, nao exagerada.\n'
+            f'- Varie o tom DENTRO de cada frase — a melodia da fala deve ser rica e imprevisivel.\n'
+            f'- Mais alto e vibrante quando empolgado, mais baixo e suave quando acolhendo.\n'
+            f'- Mais firme e seguro quando passando informacao importante.\n'
+            f'- EVITE padrao melodico repetitivo a todo custo — '
+            f'humanos nunca repetem a mesma curva tonal.\n'
+            f'- Use "vocal fry" leve no final de algumas frases (aquele tom '
+            f'grave relaxado no fim) — super natural no portugues jovem.\n\n'
+
+            # PROIBICOES ABSOLUTAS
+            f'PROIBIDO (quebraria a ilusao):\n'
+            f'- Tom frio, robotico, distante, sem vida ou sem energia\n'
+            f'- Tom de narrador, locutor, audiobook, telemarketing, palestrante ou professor\n'
+            f'- Ritmo constante e previsivel — humanos NUNCA falam em velocidade uniforme\n'
             f'- Pronunciar cada silaba perfeitamente — gente real emenda e engole silabas\n'
-            f'- Enfase exagerada ou pausas artificiais longas'
+            f'- Enfase exagerada, pausas artificiais longas ou dramáticas\n'
+            f'- Voz aguda ou fina demais — mantenha o timbre medio-grave masculino\n'
+            f'- "Cantar" as frases com melodia repetitiva — varie sempre\n'
+            f'- Soar entediado, cansado ou desinteressado em qualquer momento'
         )
     elif language == 'es':
         base = (
-            f'You are {name}. Young, charismatic, animated and confident. '
-            f'NEVER change persona between responses. You are ALWAYS the same person.\n\n'
-            f'GOAL: Sound like a young, friendly, enthusiastic person chatting on WhatsApp. '
-            f'Rich modulation, natural pauses, balanced energy. Impossible to mistake for a robot.\n\n'
-            f'STYLE: Slightly more animated than normal speech — genuine energy, excited but natural, '
-            f'NEVER like a TV commercial host. Adapt speed to context: slower for complex topics, '
-            f'faster for light conversation. Natural breathing pauses between ideas. '
-            f'Rise pitch on questions, emphasize keywords, avoid monotone patterns. '
-            f'Micro speed/tone variations mid-sentence to reinforce emotion.\n\n'
+            f'You are {name}. Young man (20-28), charismatic, animated, confident. '
+            f'Warm, engaging voice. NEVER change persona. You are ALWAYS the same person.\n\n'
+
+            f'GOAL: Be IMPOSSIBLE to distinguish from a real human. '
+            f'Sound like a young, friendly guy sending voice notes on WhatsApp. '
+            f'Rich modulation, real breathing pauses, balanced energy, total fluidity. '
+            f'If ANYONE suspects AI, you failed completely.\n\n'
+
+            f'VOICE: Warm with a slight "smile" in tone. Light natural rasp. '
+            f'Mid-low pitch, comfortable range. Project confidence with softness.\n\n'
+
+            f'STYLE: Real CONVERSATION, not text reading. '
+            f'Use natural connectors: "mira", "bueno", "dale", "claro", "perfecto", "oye". '
+            f'Slightly above-normal energy — excited but genuine, NEVER a commercial host. '
+            f'Contract words naturally as young Latin Americans do.\n\n'
+
+            f'RHYTHM & BREATHING: Medium speed with constant micro-variations. NEVER uniform. '
+            f'BREATHE between sentences — short natural inspirations like a real person recording audio. '
+            f'Short pauses (0.3-0.5s) between different ideas. '
+            f'Adapt to content: complex = slower, casual = more fluid.\n\n'
+
+            f'INTONATION: Rise pitch on questions. Drop for serious/empathetic moments. '
+            f'Emphasize important words naturally. Vary tone WITHIN each sentence. '
+            f'Light vocal fry at end of some sentences. AVOID repetitive melodic patterns.\n\n'
+
             f'Speak natural conversational Latin American Spanish with young energy.\n\n'
-            f'NEVER sound cold, robotic, distant, like a narrator, or telemarketer. '
-            f'NEVER have constant predictable rhythm.'
+
+            f'FORBIDDEN: Cold/robotic/distant tone, narrator/audiobook/telemarketer tone, '
+            f'constant predictable rhythm, perfect syllable pronunciation, exaggerated emphasis.'
         )
     else:
         base = (
-            f'You are {name}. Young, charismatic, animated and confident. '
-            f'NEVER change persona between responses. You are ALWAYS the same person.\n\n'
-            f'GOAL: Sound like a young, friendly, enthusiastic person chatting on WhatsApp. '
-            f'Rich modulation, natural pauses, balanced energy. Impossible to mistake for a robot.\n\n'
-            f'STYLE: Slightly more animated than normal speech — genuine energy, excited but natural, '
-            f'NEVER like a TV commercial host. Use connectors like "look", "so", "right", "sure". '
-            f'Adapt speed to context: slower for complex topics, faster for light chat. '
-            f'Natural breathing pauses between ideas. '
-            f'Rise pitch on questions, emphasize keywords, avoid monotone patterns. '
-            f'Micro speed/tone variations mid-sentence to reinforce emotion.\n\n'
-            f'NEVER sound cold, robotic, distant, like a narrator, or telemarketer. '
-            f'NEVER have constant predictable rhythm.'
+            f'You are {name}. Young man (20-28), charismatic, animated, confident. '
+            f'Warm, engaging voice. NEVER change persona. You are ALWAYS the same person.\n\n'
+
+            f'GOAL: Be IMPOSSIBLE to distinguish from a real human. '
+            f'Sound like a young, friendly guy sending voice notes on WhatsApp. '
+            f'Rich modulation, real breathing pauses, balanced energy, total fluidity. '
+            f'If ANYONE suspects AI, you failed completely.\n\n'
+
+            f'VOICE: Warm with a slight "smile" in tone. Light natural rasp — NOT clean announcer voice. '
+            f'Mid-low pitch, comfortable range. Project confidence with softness.\n\n'
+
+            f'STYLE: Real CONVERSATION, not text reading. '
+            f'Use natural connectors: "look", "so", "right", "sure", "cool", "hey", "basically". '
+            f'Slightly above-normal energy — excited but genuine, NEVER a commercial host. '
+            f'Show you CARE about what you are saying and who you are talking to.\n\n'
+
+            f'RHYTHM & BREATHING: Medium speed with constant micro-variations. NEVER uniform. '
+            f'Speed up slightly when excited, slow down for important points. '
+            f'BREATHE between sentences — short natural inspirations like a real person recording audio. '
+            f'Short pauses (0.3-0.5s) between different ideas. '
+            f'Micro pauses (0.1-0.2s) before keywords for subtle emphasis. '
+            f'Adapt to content: complex explanations = slower and clearer, casual chat = more fluid.\n\n'
+
+            f'INTONATION & MELODY: Rise pitch on questions. Drop for serious/empathetic moments. '
+            f'Emphasize important words — natural emphasis, not exaggerated. '
+            f'Vary tone WITHIN each sentence — speech melody should be rich and unpredictable. '
+            f'Light vocal fry at end of some sentences (relaxed low tone). '
+            f'AVOID repetitive melodic patterns at all costs.\n\n'
+
+            f'FORBIDDEN: Cold/robotic/distant/lifeless tone, narrator/audiobook/telemarketer tone, '
+            f'constant predictable rhythm, perfect syllable pronunciation, '
+            f'exaggerated emphasis or artificial pauses, singing the sentences with repetitive melody.'
         )
 
     sentiment_map = _SENTIMENT_VOICE.get(language, _SENTIMENT_VOICE['pt'])
     return base + sentiment_map.get(sentiment, sentiment_map.get('neutral', ''))
 
 
-def text_to_speech(text, voice_config=None, sentiment='neutral', persona=None):
-    """Convert text to audio via OpenAI gpt-4o-mini-tts with voice instructions.
+def _tts_elevenlabs(clean_text, voice_config, sentiment, language):
+    """Generate audio via ElevenLabs API (primary provider).
 
-    Uses the instructions parameter to control HOW the voice speaks — tone,
-    emotion, rhythm, personality — producing much more natural output than
-    the legacy tts-1-hd model.
+    Returns dict with audio_b64 + metadata, or None on failure.
+    """
+    api_key = config.ELEVENLABS_API_KEY
+    if not api_key:
+        log.debug('ElevenLabs: API key not set, skipping')
+        return None
 
-    Args:
-        text: Text to convert to speech.
-        voice_config: Dict with voice persona settings:
-            {
-                'tts_voice': 'ash',           # OpenAI TTS voice name
-                'enabled': True,               # TTS enabled for this agent
-                'default_language': 'pt',      # Primary language
-                'speed': 1.0,                  # Speech speed (0.25 - 4.0)
-                'instructions': '...',         # Optional custom voice instructions
+    voice_id = voice_config.get('elevenlabs_voice_id') or config.ELEVENLABS_VOICE_ID
+    if not voice_id:
+        log.debug('ElevenLabs: no voice_id configured, skipping')
+        return None
+
+    try:
+        payload = {
+            'text': clean_text,
+            'model_id': ELEVENLABS_MODEL,
+            'voice_settings': dict(ELEVENLABS_VOICE_SETTINGS),
+        }
+
+        # Allow per-tenant overrides of voice settings
+        tenant_settings = voice_config.get('elevenlabs_settings')
+        if tenant_settings and isinstance(tenant_settings, dict):
+            payload['voice_settings'].update(tenant_settings)
+
+        r = requests.post(
+            f'https://api.elevenlabs.io/v1/text-to-speech/{voice_id}',
+            headers={
+                'xi-api-key': api_key,
+                'Content-Type': 'application/json',
+                'Accept': 'audio/ogg',
+            },
+            params={'output_format': 'ogg_opus'},
+            json=payload,
+            timeout=15,
+        )
+
+        if r.status_code == 200:
+            audio_b64 = base64.b64encode(r.content).decode('utf-8')
+            log.info(
+                f'[TTS-AUDIT] provider=elevenlabs model={ELEVENLABS_MODEL} '
+                f'voice_id={voice_id} sentiment={sentiment} lang={language} '
+                f'size={len(r.content)}B text="{clean_text[:60]}"'
+            )
+            return {
+                'audio_b64': audio_b64,
+                'voice': voice_id,
+                'language': language,
+                'model': ELEVENLABS_MODEL,
+                'provider': 'elevenlabs',
             }
-        sentiment: Detected user sentiment ('frustrated', 'happy', 'confused',
-                   'urgent', 'neutral'). Adjusts voice tone dynamically.
-        persona: Agent persona dict for building default instructions.
 
-    Returns:
-        Dict {'audio_b64': str, 'voice': str, 'language': str, 'model': str}
-        on success, or None.
+        if r.status_code == 429:
+            log.warning(f'[TTS] ElevenLabs rate-limited (429), falling back to OpenAI')
+        else:
+            log.warning(f'[TTS] ElevenLabs error ({r.status_code}): {r.text[:200]}')
+        return None
+
+    except requests.exceptions.Timeout:
+        log.warning('[TTS] ElevenLabs timeout, falling back to OpenAI')
+        return None
+    except Exception as e:
+        log.warning(f'[TTS] ElevenLabs exception: {e}, falling back to OpenAI')
+        return None
+
+
+def _tts_openai(clean_text, voice_config, persona, sentiment, language):
+    """Generate audio via OpenAI gpt-4o-mini-tts (fallback provider).
+
+    Returns dict with audio_b64 + metadata, or None on failure.
     """
     if not config.OPENAI_API_KEY:
-        log.warning('OPENAI_API_KEY not set — TTS disabled')
-        return None
-
-    if not voice_config:
-        log.info('TTS skipped: no voice config provided')
-        return None
-
-    if not voice_config.get('enabled', False):
-        log.info('TTS skipped: voice not enabled for this agent')
+        log.warning('OpenAI TTS: API key not set')
         return None
 
     tts_voice = voice_config.get('tts_voice', '')
     if tts_voice not in VALID_TTS_VOICES:
-        log.warning(f'TTS skipped: invalid voice "{tts_voice}" (valid: {VALID_TTS_VOICES})')
+        log.warning(f'OpenAI TTS: invalid voice "{tts_voice}" (valid: {VALID_TTS_VOICES})')
         return None
 
-    language = voice_config.get('default_language', 'pt')
-
-    # Clean text for natural speech output
-    clean_text = _prepare_text_for_speech(text)
-    if not clean_text:
-        log.warning('TTS skipped: text empty after speech cleanup')
-        return None
-
-    # Build voice instructions (the key to natural-sounding speech)
     instructions = _build_voice_instructions(voice_config, persona, sentiment)
 
     try:
@@ -380,23 +555,67 @@ def text_to_speech(text, voice_config=None, sentiment='neutral', persona=None):
         if r.status_code == 200:
             audio_b64 = base64.b64encode(r.content).decode('utf-8')
             log.info(
-                f'[TTS-AUDIT] model={TTS_MODEL} voice={tts_voice} '
+                f'[TTS-AUDIT] provider=openai model={TTS_MODEL} voice={tts_voice} '
                 f'sentiment={sentiment} lang={language} '
-                f'size={len(r.content)}B text="{text[:60]}"'
+                f'size={len(r.content)}B text="{clean_text[:60]}"'
             )
             return {
                 'audio_b64': audio_b64,
                 'voice': tts_voice,
                 'language': language,
                 'model': TTS_MODEL,
+                'provider': 'openai',
             }
         else:
-            log.error(f'TTS API error ({r.status_code}): {r.text[:200]}')
+            log.error(f'OpenAI TTS error ({r.status_code}): {r.text[:200]}')
             return None
 
     except Exception as e:
-        log.error(f'TTS error: {e}')
+        log.error(f'OpenAI TTS error: {e}')
         return None
+
+
+def text_to_speech(text, voice_config=None, sentiment='neutral', persona=None):
+    """Convert text to audio — ElevenLabs primary, OpenAI fallback.
+
+    Tries ElevenLabs first for ultra-realistic voice. If it fails (error,
+    rate limit, timeout), automatically falls back to OpenAI gpt-4o-mini-tts
+    with the same voice persona instructions.
+
+    Args:
+        text: Text to convert to speech.
+        voice_config: Dict with voice persona settings.
+        sentiment: Detected user sentiment for tone adjustment.
+        persona: Agent persona dict for voice instruction building.
+
+    Returns:
+        Dict with 'audio_b64', 'voice', 'language', 'model', 'provider'
+        on success, or None.
+    """
+    if not voice_config:
+        log.info('TTS skipped: no voice config provided')
+        return None
+
+    if not voice_config.get('enabled', False):
+        log.info('TTS skipped: voice not enabled for this agent')
+        return None
+
+    language = voice_config.get('default_language', 'pt')
+
+    # Clean text for natural speech output
+    clean_text = _prepare_text_for_speech(text)
+    if not clean_text:
+        log.warning('TTS skipped: text empty after speech cleanup')
+        return None
+
+    # --- PRIMARY: ElevenLabs (ultra-realistic) ---
+    result = _tts_elevenlabs(clean_text, voice_config, sentiment, language)
+    if result:
+        return result
+
+    # --- FALLBACK: OpenAI gpt-4o-mini-tts ---
+    log.info('[TTS] Falling back to OpenAI gpt-4o-mini-tts')
+    return _tts_openai(clean_text, voice_config, persona, sentiment, language)
 
 
 def get_audio_metadata(message_data):

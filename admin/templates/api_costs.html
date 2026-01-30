@@ -116,6 +116,159 @@
     {% endif %}
 </div>
 
+<!-- Voice Cost Comparison: ElevenLabs vs OpenAI -->
+{% if voice_by_provider %}
+<div class="section-title">Custos de Voz por Provider (30 dias)</div>
+<div class="stats-grid">
+    {% set el_cost = namespace(val=0, calls=0, chars=0) %}
+    {% set oa_cost = namespace(val=0, calls=0, chars=0) %}
+    {% for row in voice_by_provider %}
+        {% if row.provider == 'elevenlabs' %}
+            {% set el_cost.val = el_cost.val + (row.total_cost|float) %}
+            {% set el_cost.calls = el_cost.calls + (row.calls|int) %}
+            {% set el_cost.chars = el_cost.chars + (row.total_chars|int) %}
+        {% else %}
+            {% set oa_cost.val = oa_cost.val + (row.total_cost|float) %}
+            {% set oa_cost.calls = oa_cost.calls + (row.calls|int) %}
+            {% set oa_cost.chars = oa_cost.chars + (row.total_chars|int) %}
+        {% endif %}
+    {% endfor %}
+    <div class="stat-card" style="border-left:3px solid #8b5cf6;">
+        <div class="stat-label">ElevenLabs (Primario)</div>
+        <div class="stat-value" style="color:#8b5cf6;">${{ '%.4f' % el_cost.val }}</div>
+        <div class="stat-detail">{{ el_cost.calls }} chamadas | {{ '{:,}'.format(el_cost.chars) }} chars</div>
+    </div>
+    <div class="stat-card" style="border-left:3px solid #10a37f;">
+        <div class="stat-label">OpenAI TTS (Fallback)</div>
+        <div class="stat-value" style="color:#10a37f;">${{ '%.4f' % oa_cost.val }}</div>
+        <div class="stat-detail">{{ oa_cost.calls }} chamadas | {{ '{:,}'.format(oa_cost.chars) }} chars</div>
+    </div>
+    <div class="stat-card" style="border-left:3px solid #25d366;">
+        <div class="stat-label">Total Voz</div>
+        <div class="stat-value">${{ '%.4f' % (el_cost.val + oa_cost.val) }}</div>
+        <div class="stat-detail">{{ el_cost.calls + oa_cost.calls }} chamadas total</div>
+    </div>
+    {% if el_cost.calls > 0 and oa_cost.calls > 0 %}
+    <div class="stat-card" style="border-left:3px solid #f59e0b;">
+        <div class="stat-label">Custo/1K chars</div>
+        <div class="stat-value" style="font-size:1.2em;">
+            <span style="color:#8b5cf6;">${{ '%.3f' % (el_cost.val / (el_cost.chars / 1000.0) if el_cost.chars > 0 else 0) }}</span>
+            vs
+            <span style="color:#10a37f;">${{ '%.3f' % (oa_cost.val / (oa_cost.chars / 1000.0) if oa_cost.chars > 0 else 0) }}</span>
+        </div>
+        <div class="stat-detail">ElevenLabs vs OpenAI</div>
+    </div>
+    {% endif %}
+</div>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Provider</th>
+                <th>Modelo</th>
+                <th class="number">Chamadas</th>
+                <th class="number">Caracteres</th>
+                <th class="number">Custo</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for row in voice_by_provider %}
+            <tr>
+                <td>
+                    {% if row.provider == 'elevenlabs' %}
+                    <span class="badge" style="background:#8b5cf6;color:#fff;">ElevenLabs</span>
+                    {% else %}
+                    <span class="badge" style="background:#10a37f;color:#fff;">OpenAI</span>
+                    {% endif %}
+                </td>
+                <td><code>{{ row.model }}</code></td>
+                <td class="number">{{ row.calls }}</td>
+                <td class="number">{{ '{:,}'.format(row.total_chars|int) }}</td>
+                <td class="number">${{ '%.4f' % (row.total_cost|float) }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Voice Cost Daily Chart -->
+{% if voice_chart_data %}
+<div class="section-title">Custo Diario de Voz - ElevenLabs vs OpenAI (30 dias)</div>
+<div class="card">
+    <div class="chart-container">
+        {% set vmax = namespace(val=0.001) %}
+        {% for day in voice_chart_data %}
+            {% if day.total > vmax.val %}{% set vmax.val = day.total %}{% endif %}
+        {% endfor %}
+        {% for day in voice_chart_data[-15:] %}
+        <div class="chart-bar-row">
+            <div class="chart-bar-label">{{ day.day[5:] }}</div>
+            <div class="chart-bar-track">
+                {% if day.get('elevenlabs', 0) > 0 %}
+                <div class="chart-bar-fill" style="width:{{ (day.get('elevenlabs', 0) / vmax.val * 100)|round(1) }}%;background:#8b5cf6;" title="ElevenLabs: ${{ '%.4f' % day.get('elevenlabs', 0) }}"></div>
+                {% endif %}
+                {% if day.get('openai', 0) > 0 %}
+                <div class="chart-bar-fill" style="width:{{ (day.get('openai', 0) / vmax.val * 100)|round(1) }}%;background:#10a37f;" title="OpenAI: ${{ '%.4f' % day.get('openai', 0) }}"></div>
+                {% endif %}
+            </div>
+            <div class="chart-bar-value">${{ '%.4f' % day.total }}</div>
+        </div>
+        {% endfor %}
+    </div>
+    <div style="margin-top:12px;display:flex;gap:16px;justify-content:center;">
+        <span><span class="dot" style="background:#8b5cf6;"></span> ElevenLabs</span>
+        <span><span class="dot" style="background:#10a37f;"></span> OpenAI TTS</span>
+    </div>
+</div>
+{% endif %}
+
+<!-- Voice Cost by Tenant (super_admin only) -->
+{% if is_super_admin and voice_by_tenant %}
+<div class="section-title">Custo de Voz por Tenant (30 dias)</div>
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Tenant</th>
+                <th>Provider</th>
+                <th>Modelo</th>
+                <th class="number">Chamadas</th>
+                <th class="number">Caracteres</th>
+                <th class="number">Custo</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% set vt_total = namespace(val=0) %}
+        {% for row in voice_by_tenant %}
+            {% set vt_total.val = vt_total.val + (row.total_cost|float) %}
+            <tr>
+                <td>
+                    <a href="/admin/tenants/{{ row.tenant_id }}">{{ row.tenant_name }}</a>
+                </td>
+                <td>
+                    {% if row.provider == 'elevenlabs' %}
+                    <span class="badge" style="background:#8b5cf6;color:#fff;">ElevenLabs</span>
+                    {% else %}
+                    <span class="badge" style="background:#10a37f;color:#fff;">OpenAI</span>
+                    {% endif %}
+                </td>
+                <td><code>{{ row.model }}</code></td>
+                <td class="number">{{ row.calls }}</td>
+                <td class="number">{{ '{:,}'.format(row.total_chars|int) }}</td>
+                <td class="number">${{ '%.4f' % (row.total_cost|float) }}</td>
+            </tr>
+        {% endfor %}
+            <tr style="border-top:2px solid #333;">
+                <td colspan="5" style="text-align:right;color:#888;"><strong>Total Voz</strong></td>
+                <td class="number"><strong style="color:#25d366;">${{ '%.4f' % vt_total.val }}</strong></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
 <!-- Per-Tenant Breakdown (super_admin only) -->
 {% if is_super_admin and by_tenant %}
 <div class="section-title">Custo por Tenant (30 dias)</div>
@@ -160,6 +313,6 @@
 
 <div style="text-align:center;color:#555;font-size:0.8em;margin-top:24px;">
     Dados atualizados em tempo real a cada carregamento de pagina.
-    Custos: Claude (API Anthropic) | TTS-1-HD (OpenAI) | Whisper (OpenAI)
+    Custos: Claude (Anthropic) | ElevenLabs TTS (Primario) | OpenAI gpt-4o-mini-tts (Fallback) | Whisper STT (OpenAI)
 </div>
 {% endblock %}
