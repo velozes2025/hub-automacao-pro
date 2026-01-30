@@ -459,7 +459,7 @@ def _tts_elevenlabs(clean_text, voice_config, sentiment, language):
             },
             params={'output_format': ELEVENLABS_OUTPUT_FORMAT},
             json=payload,
-            timeout=15,
+            timeout=45,
         )
 
         if r.status_code == 200:
