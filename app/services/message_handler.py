@@ -18,7 +18,7 @@ from app.db import leads as leads_db
 from app.db import queue as queue_db
 from app.db import consumption as consumption_db
 from app.ai import supervisor
-from app.ai.oliver_core import process_v51
+from app.ai.oliver_core.engine import process_v60
 from app.ai.prompts import detect_language, is_real_name
 from app.channels import whatsapp, lid_resolver, sender, transcriber
 from app.services import lead_service
@@ -328,9 +328,9 @@ def _process_incoming(instance_name, data):
     ack_timer = threading.Timer(2.0, _send_ack)
     ack_timer.start()
 
-    # --- Call AI (v5.1 engine for text, passthrough for audio) ---
+    # --- Call AI (v6.0 engine wraps v5.1 with state machine + memory + reflection) ---
     try:
-        result = process_v51(
+        result = process_v60(
             conversation=conversation_ctx,
             agent_config=agent_config,
             language=language,

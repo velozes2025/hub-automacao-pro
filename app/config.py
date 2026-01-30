@@ -71,6 +71,12 @@ class Config:
     ENGINE_V51_MAX_COMPRESSED_HISTORY = 3  # exchanges kept in compressed history
     DEFAULT_OLIVER_TIER = os.getenv('DEFAULT_OLIVER_TIER', 'tenant_free')
 
+    # --- OLIVER.CORE v6.0 Engine (State Machine + Memory + Reflection) ---
+    ENGINE_V60_ENABLED = os.getenv('ENGINE_V60_ENABLED', 'false').lower() == 'true'
+    ENGINE_V60_MEMORY_ENABLED = os.getenv('ENGINE_V60_MEMORY_ENABLED', 'true').lower() == 'true'
+    ENGINE_V60_REFLECTION_ENABLED = os.getenv('ENGINE_V60_REFLECTION_ENABLED', 'true').lower() == 'true'
+    ENGINE_V60_STATE_MACHINE_ENABLED = os.getenv('ENGINE_V60_STATE_MACHINE_ENABLED', 'true').lower() == 'true'
+
     # --- Pricing ---
     PRICING = {
         'claude-3-haiku-20240307': {'input': 0.00000025, 'output': 0.00000125},

@@ -21,8 +21,18 @@ def create_app():
     app.register_blueprint(internal_bp)
 
     # Initialize database pool
-    from app.db import init_pool
+    from app.db import init_pool, run_migration
     init_pool()
+
+    # Run pending migrations (idempotent — uses IF NOT EXISTS)
+    import os
+    _migration_dir = os.path.join(os.path.dirname(__file__), '..', 'migrations')
+    for mig in sorted(os.listdir(_migration_dir)):
+        if mig.endswith('.sql'):
+            try:
+                run_migration(os.path.join(_migration_dir, mig))
+            except Exception as e:
+                logging.getLogger('app').warning(f'Migration {mig}: {e}')
 
     # Initialize Redis (for dedup, health tracking)
     from app.db.redis_client import init_redis

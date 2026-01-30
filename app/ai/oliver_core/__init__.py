@@ -1,9 +1,10 @@
-"""OLIVER.CORE v5.1 — Adaptive Multi-Tenant Engine.
+"""OLIVER.CORE v6.0 — Adaptive Multi-Tenant Engine.
 
 Token-efficient engine with intent detection, response caching,
-and compressed prompts. Sits between message_handler and supervisor.
+compressed prompts, state machine, agent routing, client memory,
+and reflection loop. Sits between message_handler and supervisor.
 """
 
-from app.ai.oliver_core.engine import process_v51
+from app.ai.oliver_core.engine import process_v51, process_v60
 
-__all__ = ['process_v51']
+__all__ = ['process_v51', 'process_v60']

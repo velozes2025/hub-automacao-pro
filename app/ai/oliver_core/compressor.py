@@ -24,15 +24,18 @@ _LANG_LABELS = {
 
 def build_compressed_prompt(phase, intent_type, agent_config, conversation,
                             lead, language='pt', sentiment='neutral',
-                            tenant_brand=None):
+                            tenant_brand=None, agent_modifier='',
+                            client_facts=None):
     """Build a compressed system prompt (~150-250 tokens).
 
     Layers:
         0. DNA (~80 tokens) — always
+        0.5 Agent modifier (v6.0) — specialist mode if active
         1. Expander (~40-60 tokens) — based on intent
         2. Client context (~30-50 tokens) — compressed lead/conversation data
+        2.5 Client facts (v6.0) — extracted memory facts
         3. History (~40 tokens) — last N exchanges, truncated
-        + Language, sentiment, base tenant prompt
+        + Language, sentiment, base tenant prompt, reflection correction
     """
     parts = []
 
@@ -48,6 +51,10 @@ def build_compressed_prompt(phase, intent_type, agent_config, conversation,
         truncated = base_prompt[:200].rsplit(' ', 1)[0] if len(base_prompt) > 200 else base_prompt
         parts.append(f'[BASE]{truncated}')
 
+    # Layer 0.5: Agent modifier (v6.0 — specialist mode)
+    if agent_modifier:
+        parts.append(f'[AGENT]{agent_modifier}')
+
     # Layer 1: Expander (on-demand, with dynamic brand)
     expanders = get_expanders(empresa)
     expander_key = intent_type or phase
@@ -59,6 +66,13 @@ def build_compressed_prompt(phase, intent_type, agent_config, conversation,
     ctx = compress_lead_context(lead, conversation)
     if ctx:
         parts.append(ctx)
+
+    # Layer 2.5: Client facts from memory (v6.0)
+    if client_facts:
+        from app.ai.oliver_core.memory_service import format_facts_for_prompt
+        facts_str = format_facts_for_prompt(client_facts)
+        if facts_str:
+            parts.append(facts_str)
 
     # Layer 3: History (compressed)
     messages = conversation.get('messages', [])
@@ -77,6 +91,11 @@ def build_compressed_prompt(phase, intent_type, agent_config, conversation,
 
     # Creator rule (compact)
     parts.append('CRIADOR:Thiago. Se perguntarem quem te criou, responda THIAGO.')
+
+    # Reflection correction (v6.0 — appended if retry)
+    reflection_correction = conversation.get('reflection_correction', '')
+    if reflection_correction:
+        parts.append(reflection_correction)
 
     return '\n'.join(parts)
 
