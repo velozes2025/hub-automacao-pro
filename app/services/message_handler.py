@@ -420,7 +420,7 @@ def _process_incoming(instance_name, data):
         return
 
     # Adjust TTS speed based on detected sentiment for more natural delivery
-    if voice_config and voice_config.get('enabled'):
+    if source == 'audio' and voice_config and voice_config.get('enabled'):
         _sentiment_speeds = {
             'frustrated': 0.88,   # Slower = empathetic, calm, acolhedor
             'happy': 1.08,        # Slightly faster = energetic but not rushed
@@ -433,9 +433,9 @@ def _process_incoming(instance_name, data):
         if base_speed == 1.0:
             voice_config['speed'] = _sentiment_speeds.get(sentiment, 1.0)
 
-    # Send response — ALWAYS audio when voice persona is enabled
+    # Send response — mirror client format: audio→audio, text→text
     reply_type = 'text'
-    if voice_config and voice_config.get('enabled'):
+    if source == 'audio' and voice_config and voice_config.get('enabled'):
         sent = sender.send_audio_response(
             instance_name, send_phone, response_text,
             voice_config=voice_config,
