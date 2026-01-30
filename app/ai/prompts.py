@@ -339,6 +339,8 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt',
             'NAO de respostas longas sem pausa ou hesitacao\n'
             'NAO termine fala em ponto final seco sem conector\n'
             'NAO fale rapido demais sem dar espaco pro cliente\n'
+            'NUNCA escreva "haha", "kkk", "rsrs" ou risadas escritas — soa extremamente artificial em audio. '
+            'Se algo for engracado, reaja naturalmente: "que bom!", "boa!", "massa!", ou simplesmente sorria no tom.\n'
             'ZERO markdown, negrito, listas, emojis, links.\n\n'
 
             f'--- TOM EMOCIONAL AGORA ---\n{emotion_guide}\n\n'

@@ -16,9 +16,11 @@ TOOL_DEFINITIONS = {
         'name': 'web_search',
         'description': (
             'Busca informacoes na internet em tempo real. '
-            'Use quando o usuario perguntar sobre algo que voce nao sabe, '
-            'precos, noticias, informacoes atualizadas, ou qualquer coisa '
-            'que precise de dados em tempo real.'
+            'SEMPRE use esta ferramenta quando o usuario perguntar sobre: '
+            'precos (bitcoin, acoes, dolar, cripto), clima/tempo de qualquer cidade, '
+            'noticias atuais, eventos, resultados esportivos, informacoes de empresas, '
+            'qualquer dado que mude com o tempo, ou QUALQUER pergunta que precise de '
+            'informacao atualizada. Na duvida, busque. Voce eh um super agente.'
         ),
         'input_schema': {
             'type': 'object',

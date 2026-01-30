@@ -9,16 +9,67 @@ v5.3: Dynamic brand per tenant via get_dna()/get_expanders().
 """
 
 import logging
+from datetime import datetime, timezone, timedelta
 from app.ai.oliver_core.dna import get_dna, get_expanders
 from app.config import config
 
 log = logging.getLogger('oliver.compressor')
 
+# --- Timezone by country code / Brazilian DDD ---
+_COUNTRY_TZ = {
+    '1': -5, '44': 0, '351': 0, '34': 1, '33': 1, '49': 1, '39': 1,
+    '81': 9, '86': 8, '91': 5, '971': 4, '972': 2, '27': 2, '234': 1,
+    '52': -6, '54': -3, '56': -4, '57': -5, '58': -4, '51': -5,
+}
+
+_GREETING = {
+    'morning': {'pt': 'bom dia', 'en': 'good morning', 'es': 'buenos dias'},
+    'afternoon': {'pt': 'boa tarde', 'en': 'good afternoon', 'es': 'buenas tardes'},
+    'evening': {'pt': 'boa noite', 'en': 'good evening', 'es': 'buenas noches'},
+}
+
+
+def _get_local_time(phone):
+    """Detect local time from phone number and return prompt hint."""
+    if not phone:
+        return ''
+    # Strip non-digits
+    digits = ''.join(c for c in phone if c.isdigit())
+    if not digits:
+        return ''
+
+    offset_h = -3  # default: Brazil (São Paulo)
+
+    # Brazil: starts with 55
+    if digits.startswith('55') and len(digits) >= 4:
+        offset_h = -3  # All Brazil is UTC-3 (simplified)
+    else:
+        # Try country codes (longest first)
+        for code_len in (3, 2, 1):
+            code = digits[:code_len]
+            if code in _COUNTRY_TZ:
+                offset_h = _COUNTRY_TZ[code]
+                break
+
+    tz = timezone(timedelta(hours=offset_h))
+    now = datetime.now(tz)
+    hour = now.hour
+
+    if 6 <= hour < 12:
+        period = 'morning'
+    elif 12 <= hour < 18:
+        period = 'afternoon'
+    else:
+        period = 'evening'
+
+    return f'HORA_LOCAL:{now.strftime("%H:%M")} SAUDACAO_CORRETA:{_GREETING[period].get("pt", "oi")}'
+
+
 # --- Language labels (compact) ---
 _LANG_LABELS = {
-    'pt': 'IDIOMA:portugues brasileiro',
-    'en': 'IDIOMA:English',
-    'es': 'IDIOMA:espanol',
+    'pt': 'IDIOMA:portugues brasileiro. PROIBIDO qualquer palavra em ingles ou outro idioma. 100% portugues.',
+    'en': 'IDIOMA:English only. ZERO words in Portuguese or any other language. 100% English.',
+    'es': 'IDIOMA:espanol solamente. PROHIBIDO palabras en otro idioma. 100% espanol.',
 }
 
 
@@ -85,12 +136,19 @@ def build_compressed_prompt(phase, intent_type, agent_config, conversation,
     lang_label = _LANG_LABELS.get(language, _LANG_LABELS['pt'])
     parts.append(lang_label)
 
+    # Local time for the contact (based on phone number)
+    contact_phone = conversation.get('contact_phone', '')
+    local_time = _get_local_time(contact_phone)
+    if local_time:
+        parts.append(local_time)
+
     # Sentiment (only if non-neutral)
     if sentiment and sentiment != 'neutral':
         parts.append(f'SENT:{sentiment}')
 
     # Creator rule (compact)
     parts.append('CRIADOR:Thiago. Se perguntarem quem te criou, responda THIAGO.')
+    parts.append('REGRA:Sempre pergunte o nome do lead se nao souber. Nunca repita conteudo ja dito.')
 
     # Reflection correction (v6.0 — appended if retry)
     reflection_correction = conversation.get('reflection_correction', '')

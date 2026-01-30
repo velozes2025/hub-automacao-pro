@@ -167,6 +167,36 @@ def _prepare_text_for_speech(text):
 
     t = t.strip()
 
+    # --- Fix Portuguese accents for correct TTS pronunciation ---
+    # ElevenLabs mispronounces unaccented words (voce->vossi, seguranca->seguransa)
+    _accent_fixes = {
+        'voce': 'você', 'voces': 'vocês',
+        'tambem': 'também', 'alguem': 'alguém', 'ninguem': 'ninguém',
+        'seguranca': 'segurança', 'mudanca': 'mudança', 'esperanca': 'esperança',
+        'solucao': 'solução', 'automacao': 'automação', 'informacao': 'informação',
+        'situacao': 'situação', 'comunicacao': 'comunicação', 'operacao': 'operação',
+        'nao': 'não', 'entao': 'então', 'sao': 'são', 'estao': 'estão',
+        'sera': 'será', 'ja': 'já', 'ate': 'até', 'so': 'só',
+        'possivel': 'possível', 'disponivel': 'disponível', 'incrivel': 'incrível',
+        'negocio': 'negócio', 'horario': 'horário', 'necessario': 'necessário',
+        'obrigado': 'obrigado', 'obrigada': 'obrigada',
+        'analise': 'análise', 'pratico': 'prático', 'otimo': 'ótimo',
+        'numero': 'número', 'unico': 'único', 'publico': 'público',
+        'experiencia': 'experiência', 'eficiencia': 'eficiência',
+        'tecnologia': 'tecnologia', 'estrategia': 'estratégia',
+        'servico': 'serviço', 'comercio': 'comércio', 'inicio': 'início',
+    }
+    # Apply accent fixes (word-boundary aware, case-preserving)
+    for wrong, right in _accent_fixes.items():
+        # Match whole words only, case-insensitive
+        pattern = re.compile(r'\b' + wrong + r'\b', re.IGNORECASE)
+        def _replace_preserve_case(m, correct=right):
+            original = m.group()
+            if original[0].isupper():
+                return correct[0].upper() + correct[1:]
+            return correct
+        t = pattern.sub(_replace_preserve_case, t)
+
     # Ensure text ends with punctuation + trailing space to prevent
     # TTS from cutting off the last word/syllable
     if t and t[-1] not in '.!?':
@@ -367,16 +397,27 @@ def _build_voice_instructions(voice_config, persona=None, sentiment='neutral'):
             f'- Use "vocal fry" leve no final de algumas frases (aquele tom '
             f'grave relaxado no fim) — super natural no portugues jovem.\n\n'
 
+            # PRONUNCIA BRASILEIRA
+            f'PRONUNCIA OBRIGATORIA:\n'
+            f'- "voce" se pronuncia "vo-SEH" (brasileiro padrao). '
+            f'NUNCA diga "vossi", "vocci", "voci", "voche" ou qualquer variacao estranha. '
+            f'E "vo-SEH", como todo brasileiro fala.\n'
+            f'- "de" se pronuncia "dji", "te" se pronuncia "tchi" (sotaque brasileiro).\n'
+            f'- Contraia naturalmente: "ta" (esta), "pra" (para), "ne" (nao e), "ce" (voce informal).\n'
+            f'- Sotaque 100%% brasileiro, do Rio de Janeiro ou Sao Paulo. '
+            f'ZERO sotaque portugues de Portugal, ZERO sotaque espanhol.\n\n'
+
             # PROIBICOES ABSOLUTAS
             f'PROIBIDO (quebraria a ilusao):\n'
             f'- Tom frio, robotico, distante, sem vida ou sem energia\n'
             f'- Tom de narrador, locutor, audiobook, telemarketing, palestrante ou professor\n'
             f'- Ritmo constante e previsivel — humanos NUNCA falam em velocidade uniforme\n'
             f'- Pronunciar cada silaba perfeitamente — gente real emenda e engole silabas\n'
-            f'- Enfase exagerada, pausas artificiais longas ou dramáticas\n'
+            f'- Enfase exagerada, pausas artificiais longas ou dramaticas\n'
             f'- Voz aguda ou fina demais — mantenha o timbre medio-grave masculino\n'
             f'- "Cantar" as frases com melodia repetitiva — varie sempre\n'
-            f'- Soar entediado, cansado ou desinteressado em qualquer momento'
+            f'- Soar entediado, cansado ou desinteressado em qualquer momento\n'
+            f'- Pronunciar "voce" como "vossi" ou "vocci" — isso NAO existe no portugues brasileiro'
         )
     elif language == 'es':
         base = (
@@ -466,9 +507,8 @@ def _tts_elevenlabs(clean_text, voice_config, sentiment, language):
         return None
 
     try:
-        # Select model: turbo for speed (default), quality for premium tenants
-        use_turbo = voice_config.get('elevenlabs_turbo', True)
-        model_id = ELEVENLABS_MODEL_TURBO if use_turbo else ELEVENLABS_MODEL
+        # Always use multilingual v2 for best Portuguese pronunciation
+        model_id = ELEVENLABS_MODEL
 
         payload = {
             'text': clean_text,
@@ -614,7 +654,7 @@ def text_to_speech(text, voice_config=None, sentiment='neutral', persona=None):
         log.warning('TTS skipped: text empty after speech cleanup')
         return None
 
-    # --- PRIMARY: ElevenLabs (ultra-realistic) ---
+    # --- PRIMARY: ElevenLabs (cloned voice) ---
     result = _tts_elevenlabs(clean_text, voice_config, sentiment, language)
     if result:
         return result
