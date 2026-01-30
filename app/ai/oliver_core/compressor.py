@@ -5,10 +5,11 @@ Replaces the ~1800 token verbose system prompt for text mode.
 
 v5.2: Enriched client context with memory fields (setor, localizacao,
       objecoes levantadas, proximo passo combinado, preferencias).
+v5.3: Dynamic brand per tenant via get_dna()/get_expanders().
 """
 
 import logging
-from app.ai.oliver_core.dna import DNA, EXPANDERS
+from app.ai.oliver_core.dna import get_dna, get_expanders
 from app.config import config
 
 log = logging.getLogger('oliver.compressor')
@@ -22,7 +23,8 @@ _LANG_LABELS = {
 
 
 def build_compressed_prompt(phase, intent_type, agent_config, conversation,
-                            lead, language='pt', sentiment='neutral'):
+                            lead, language='pt', sentiment='neutral',
+                            tenant_brand=None):
     """Build a compressed system prompt (~150-250 tokens).
 
     Layers:
@@ -34,8 +36,10 @@ def build_compressed_prompt(phase, intent_type, agent_config, conversation,
     """
     parts = []
 
-    # Layer 0: DNA (always)
-    parts.append(DNA)
+    empresa = tenant_brand or 'QuantrexNow'
+
+    # Layer 0: DNA (always, with dynamic brand)
+    parts.append(get_dna(empresa))
 
     # Tenant base prompt (if exists, prepend — it defines the business context)
     base_prompt = agent_config.get('system_prompt', '')
@@ -44,9 +48,10 @@ def build_compressed_prompt(phase, intent_type, agent_config, conversation,
         truncated = base_prompt[:200].rsplit(' ', 1)[0] if len(base_prompt) > 200 else base_prompt
         parts.append(f'[BASE]{truncated}')
 
-    # Layer 1: Expander (on-demand)
+    # Layer 1: Expander (on-demand, with dynamic brand)
+    expanders = get_expanders(empresa)
     expander_key = intent_type or phase
-    expander = EXPANDERS.get(expander_key) or EXPANDERS.get(phase, '')
+    expander = expanders.get(expander_key) or expanders.get(phase, '')
     if expander:
         parts.append(f'[FASE]{expander}')
 

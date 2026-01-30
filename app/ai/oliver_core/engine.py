@@ -5,8 +5,10 @@ Text-mode: intent detection -> cache -> compressed prompt -> supervisor.
 Audio-mode: passthrough to supervisor (v5.0 voice path unchanged).
 
 v5.2: Returning client detection via message_count, enriched memory context.
+v5.3: Dynamic brand per tenant, multi-agent orchestration (TECH/FIN).
 """
 
+import json
 import logging
 from app.config import config
 from app.ai import supervisor
@@ -19,6 +21,42 @@ from app.ai.oliver_core.sistema_v51 import SISTEMA_V51_TEXT
 from app.ai.oliver_core import metrics
 
 log = logging.getLogger('oliver.engine')
+
+
+def _resolve_tenant_brand(tenant_settings, agent_config, conversation):
+    """Resolve tenant brand name with priority chain.
+
+    Priority:
+        1. tenant_settings.brand_name (explicit brand override)
+        2. agent_config.persona.company_name (from persona config)
+        3. conversation.tenant_name (from DB join)
+        4. Fallback: 'QuantrexNow'
+    """
+    # 1. Explicit brand_name in tenant settings
+    if tenant_settings and isinstance(tenant_settings, dict):
+        brand = tenant_settings.get('brand_name')
+        if brand:
+            return brand
+
+    # 2. Persona company_name
+    persona = agent_config.get('persona', {})
+    if isinstance(persona, str):
+        try:
+            persona = json.loads(persona) if persona else {}
+        except (ValueError, TypeError):
+            persona = {}
+    if isinstance(persona, dict):
+        company = persona.get('company_name')
+        if company:
+            return company
+
+    # 3. Tenant name from conversation context
+    tenant_name = conversation.get('tenant_name', '')
+    if tenant_name:
+        return tenant_name
+
+    # 4. Fallback
+    return 'QuantrexNow'
 
 
 def process_v51(conversation, agent_config, language='pt', api_key=None,
@@ -56,6 +94,9 @@ def process_v51(conversation, agent_config, language='pt', api_key=None,
     lead = conversation.get('lead')
     stage = conversation.get('stage', 'new')
 
+    # Resolve tenant brand (dynamic per tenant)
+    tenant_brand = _resolve_tenant_brand(tenant_settings, agent_config, conversation)
+
     # Extract last user message and count total messages (for returning client detection)
     messages = conversation.get('messages', [])
     last_user_msg = ''
@@ -75,7 +116,8 @@ def process_v51(conversation, agent_config, language='pt', api_key=None,
     # --- Try cache (0 tokens) ---
     cache_enabled = tier_config.get('cache_enabled', True) and config.ENGINE_V51_CACHE_ENABLED
     if cache_enabled:
-        cached_response = try_cache(phase, intent_type, lead, language)
+        cached_response = try_cache(phase, intent_type, lead, language,
+                                    tenant_brand=tenant_brand)
         if cached_response:
             metrics.record(
                 tenant_id=tenant_id, cache_hit=True,
@@ -104,6 +146,7 @@ def process_v51(conversation, agent_config, language='pt', api_key=None,
         lead=lead,
         language=language,
         sentiment=sentiment,
+        tenant_brand=tenant_brand,
     )
 
     # Override max_history with tier-aware limit

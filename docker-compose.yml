@@ -130,10 +130,17 @@ services:
       - DEFAULT_MODEL=${DEFAULT_MODEL:-claude-sonnet-4-20250514}
       - MAX_WEBHOOK_WORKERS=${MAX_WEBHOOK_WORKERS:-20}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - REDIS_URL=redis://redis:6379/1
+      - STRIPE_API_KEY=${STRIPE_API_KEY:-}
+      - STRIPE_PRICE_ID=${STRIPE_PRICE_ID:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+      - WEBHOOK_BACKUP_URL=${WEBHOOK_BACKUP_URL:-}
     networks:
       - hub-network
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       evolution:
         condition: service_started

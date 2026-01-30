@@ -169,6 +169,14 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt',
         f'Se o usuario trocar de idioma, acompanhe o idioma dele.'
     )
 
+    # Checkpoint: prevent repeating questions
+    checkpoint_rule = (
+        'CHECKPOINT: Antes de CADA resposta, verifique o historico da conversa. '
+        'PROIBIDO repetir perguntas que voce ja fez. '
+        'Se o cliente ja respondeu algo, nao pergunte de novo. '
+        'DESISTENCIA: Se o cliente parou de responder, max 2 tentativas, depois aguarde. '
+    )
+
     # Brevity, variation, and strategic sales intelligence
     brevity_rule = (
         'REGRA DE OURO: Curto, estrategico e humano. '
@@ -199,6 +207,7 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt',
             f'\n\nCONTEXTO: Ja trocaram {total_msgs} msgs. '
             f'{lang_rule} '
             f'{creator_rule}'
+            f'{checkpoint_rule}'
             f'{brevity_rule}'
             f'{f"Nome do cliente: {nome}. Chame pelo nome. " if nome else nome_instrucao}'
             f'NAO se apresente de novo. Continue a conversa naturalmente. '

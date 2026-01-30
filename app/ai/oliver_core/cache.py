@@ -1,10 +1,11 @@
 """Global response cache for OLIVER.CORE v5.2.
 
 Pre-defined responses for predictable intents. Cache hit = 0 LLM tokens.
-Supports {nome} substitution and multi-language variants.
+Supports {nome} and {empresa} substitution and multi-language variants.
 
 v5.2: Added ABER.retorno (not cached — requires memory context, always LLM),
       added OBJ.depois entries.
+v5.3: Dynamic brand per tenant via {empresa} template.
 """
 
 import random
@@ -21,12 +22,12 @@ log = logging.getLogger('oliver.cache')
 _GLOBAL_CACHE = {
     # --- ABERTURA (new clients only — returning clients go to LLM) ---
     ('ABER.sem_nome', 'pt'): [
-        'Oi! Sou o Oliver, da QuantrexNow. Com quem eu falo?',
-        'Oi! Aqui e o Oliver, da QuantrexNow. Como posso te chamar?',
+        'Oi! Sou o Oliver, da {empresa}. Com quem eu falo?',
+        'Oi! Aqui e o Oliver, da {empresa}. Como posso te chamar?',
     ],
     ('ABER.com_nome', 'pt'): [
-        'Oi {nome}! Sou o Oliver, da QuantrexNow. Me conta, o que te trouxe aqui?',
-        'Prazer, {nome}! Sou o Oliver, da QuantrexNow. Qual o ramo do seu negocio?',
+        'Oi {nome}! Sou o Oliver, da {empresa}. Me conta, o que te trouxe aqui?',
+        'Prazer, {nome}! Sou o Oliver, da {empresa}. Qual o ramo do seu negocio?',
     ],
 
     # --- OBJECOES ---
@@ -63,10 +64,10 @@ _GLOBAL_CACHE = {
 
     # --- ENGLISH ---
     ('ABER.sem_nome', 'en'): [
-        "Hi! I'm Oliver from QuantrexNow. Who am I speaking with?",
+        "Hi! I'm Oliver from {empresa}. Who am I speaking with?",
     ],
     ('ABER.com_nome', 'en'): [
-        "Hi {nome}! I'm Oliver from QuantrexNow. What brings you here?",
+        "Hi {nome}! I'm Oliver from {empresa}. What brings you here?",
     ],
     ('OBJ.preco', 'en'): [
         "I understand. Expensive compared to what? What matters is the return it brings to your business.",
@@ -86,10 +87,10 @@ _GLOBAL_CACHE = {
 
     # --- SPANISH ---
     ('ABER.sem_nome', 'es'): [
-        'Hola! Soy Oliver de QuantrexNow. Con quien hablo?',
+        'Hola! Soy Oliver de {empresa}. Con quien hablo?',
     ],
     ('ABER.com_nome', 'es'): [
-        'Hola {nome}! Soy Oliver de QuantrexNow. Que te trajo por aqui?',
+        'Hola {nome}! Soy Oliver de {empresa}. Que te trajo por aqui?',
     ],
     ('OBJ.preco', 'es'): [
         'Entiendo. Caro comparado a que? Lo que importa es el retorno para tu negocio.',
@@ -103,7 +104,7 @@ _GLOBAL_CACHE = {
 }
 
 
-def try_cache(phase, intent_type, lead, language='pt'):
+def try_cache(phase, intent_type, lead, language='pt', tenant_brand=None):
     """Look up a cached response for this intent.
 
     Args:
@@ -111,6 +112,7 @@ def try_cache(phase, intent_type, lead, language='pt'):
         intent_type: specific type (OBJ.preco, ABER.com_nome, etc.) or None
         lead: lead dict or None
         language: 'pt', 'en', or 'es'
+        tenant_brand: dynamic company name for this tenant
 
     Returns:
         str or None: cached response with variables substituted, or None on miss.
@@ -144,7 +146,7 @@ def try_cache(phase, intent_type, lead, language='pt'):
 
     # Variable substitution
     nome = (lead.get('name', '') if lead else '') or ''
-    empresa = (lead.get('company', '') if lead else '') or ''
+    empresa = tenant_brand or (lead.get('company', '') if lead else '') or 'QuantrexNow'
     response = response.replace('{nome}', nome).replace('{empresa}', empresa)
 
     log.info(f'Cache HIT: ({key}, {language}) -> "{response[:60]}..."')

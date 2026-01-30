@@ -4,6 +4,7 @@ Maps user messages to (phase, intent_type) tuples. Lightweight — no LLM call.
 Falls back to conversation stage when no regex matches.
 
 v5.2: Added OBJ.depois pattern, returning client detection.
+v5.3: Added TECH (technical/support) and FIN (financial/payment) delegation patterns.
 """
 
 import re
@@ -47,6 +48,24 @@ _PATTERNS = [
         r'\b(rapido|direto|resumo|resume|objetivo|sem enrolacao|'
         r'quick|straight to the point|briefly|tldr)\b', re.I)),
 
+    # Technical support / specialist delegation
+    ('TECH.suporte', re.compile(
+        r'\b(suporte|tecnico|tecnica|bug|erro|nao funciona|travou|problema tecnico|'
+        r'configuracao|instalar|integrar|api|sistema|plataforma|painel|dashboard|'
+        r'technical|support|setup|configure|integration|not working|broken)\b', re.I)),
+    ('TECH.dev', re.compile(
+        r'\b(desenvolvimento|programacao|codigo|webhook|endpoint|servidor|'
+        r'deploy|hosting|dominio|ssl|dns|development|code|server)\b', re.I)),
+
+    # Financial / payment delegation
+    ('FIN.pagamento', re.compile(
+        r'\b(pagamento|pagar|boleto|cartao|pix|fatura|cobranca|nota fiscal|'
+        r'nf|recibo|reembolso|estorno|cancelar assinatura|'
+        r'payment|invoice|billing|refund|cancel subscription|credit card)\b', re.I)),
+    ('FIN.plano', re.compile(
+        r'\b(plano|assinatura|mensalidade|anual|trimestral|trial|teste gratis|'
+        r'subscription|plan|pricing|free trial)\b', re.I)),
+
     # Closing signals
     ('FECH', re.compile(
         r'\b(fechar|contratar|comprar|assinar|comecar|vamos la|'
@@ -65,7 +84,7 @@ _STAGE_MAP = {
     'qualifying': 'DIAG',
     'nurturing': 'EDUC',
     'closing': 'PROP',
-    'support': 'DIAG',
+    'support': 'TECH',
     'closed': 'FECH',
 }
 
@@ -82,7 +101,7 @@ def detect_intent(message_text, conversation_stage='new', lead=None,
 
     Returns:
         tuple: (phase, intent_type)
-            - phase: 'ABER', 'DIAG', 'EDUC', 'PROP', 'FECH', 'OBJ', 'SIT'
+            - phase: 'ABER', 'DIAG', 'EDUC', 'PROP', 'FECH', 'OBJ', 'SIT', 'TECH', 'FIN'
             - intent_type: specific type like 'OBJ.preco' or None for generic phases
     """
     if not message_text:

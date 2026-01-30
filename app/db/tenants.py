@@ -166,3 +166,13 @@ def list_agent_configs(tenant_id):
         "SELECT * FROM agent_configs WHERE tenant_id = %s ORDER BY name",
         (tenant_id,),
     )
+
+
+def list_active_accounts():
+    """List all active WhatsApp accounts across all tenants (for health monitoring)."""
+    return query(
+        """SELECT wa.id, wa.tenant_id, wa.instance_name, wa.status
+           FROM whatsapp_accounts wa
+           JOIN tenants t ON t.id = wa.tenant_id
+           WHERE wa.status = 'active' AND t.status = 'active'""",
+    )

@@ -9,7 +9,9 @@ RULE: No client goes without a response. No new lead is lost.
 import json
 import time
 import logging
+import threading
 
+from app.config import config
 from app.db import tenants as tenants_db
 from app.db import conversations as conv_db
 from app.db import leads as leads_db
@@ -135,6 +137,18 @@ def _handle_sent_message(instance_name, data):
 
 def _process_incoming(instance_name, data):
     """Process an incoming message through the full pipeline."""
+    # --- DEDUPLICATION: check if message_id already processed ---
+    message_id = data.get('key', {}).get('id', '')
+    if message_id:
+        from app.db.redis_client import get_redis
+        r = get_redis()
+        if r:
+            dedup_key = f'dedup:{instance_name}:{message_id}'
+            if not r.set(dedup_key, '1', nx=True, ex=config.DEDUP_TTL_SECONDS):
+                log.debug(f'[DEDUP] Duplicate message ignored: {message_id}')
+                return
+        # If Redis unavailable, proceed without dedup (graceful degradation)
+
     # Extract content (text or transcribed audio)
     text, source = _extract_content(data, instance_name)
     if not text:
@@ -157,6 +171,13 @@ def _process_incoming(instance_name, data):
 
     tenant_id = str(account['tenant_id'])
     account_id = str(account['id'])
+
+    # --- Billing check (Stripe) ---
+    from app.services import stripe_service
+    if not stripe_service.check_tenant_billing(tenant_id):
+        log.warning(f'[BILLING] Tenant {tenant_id} blocked — billing issue')
+        return
+
     account_config = account.get('config', {})
     if isinstance(account_config, str):
         account_config = json.loads(account_config) if account_config else {}
@@ -229,8 +250,10 @@ def _process_incoming(instance_name, data):
             conversation_id=conversation_id,
             language=language,
         )
+        log.info(f'[LEAD] Captured | TenantID:{tenant_id} | Phone:{db_phone} | '
+                 f'Name:{push_name} | Source:{source} | Status:OK')
     except Exception as e:
-        log.error(f'Lead save error: {e}')
+        log.error(f'[LEAD] Failed | TenantID:{tenant_id} | Phone:{db_phone} | Error:{e}')
 
     # Reset reengagement count on new user message
     conv_db.reset_reengagement(conversation_id)
@@ -277,6 +300,7 @@ def _process_incoming(instance_name, data):
     conversation_ctx = dict(conversation)
     conversation_ctx['messages'] = history
     conversation_ctx['lead'] = lead
+    conversation_ctx['tenant_name'] = account.get('tenant_name', '')
 
     # Per-tenant API key
     api_key = account.get('tenant_anthropic_key')
@@ -286,15 +310,37 @@ def _process_incoming(instance_name, data):
     if isinstance(tenant_settings, str):
         tenant_settings = json.loads(tenant_settings) if tenant_settings else {}
 
+    # --- Slow response acknowledgment (2s timeout) ---
+    _ack_messages = {
+        'pt': 'Recebi! Estou analisando...',
+        'en': 'Got it! Analyzing...',
+        'es': 'Recibido! Estoy analizando...',
+    }
+    ack_sent = threading.Event()
+
+    def _send_ack():
+        if not ack_sent.is_set() and can_send:
+            ack_msg = _ack_messages.get(language, _ack_messages['pt'])
+            whatsapp.send_message(instance_name, send_phone, ack_msg)
+            ack_sent.set()
+            log.info(f'[ACK] Slow response ack sent to {send_phone}')
+
+    ack_timer = threading.Timer(2.0, _send_ack)
+    ack_timer.start()
+
     # --- Call AI (v5.1 engine for text, passthrough for audio) ---
-    result = process_v51(
-        conversation=conversation_ctx,
-        agent_config=agent_config,
-        language=language,
-        api_key=api_key,
-        source=source,
-        tenant_settings=tenant_settings,
-    )
+    try:
+        result = process_v51(
+            conversation=conversation_ctx,
+            agent_config=agent_config,
+            language=language,
+            api_key=api_key,
+            source=source,
+            tenant_settings=tenant_settings,
+        )
+    finally:
+        ack_timer.cancel()
+        ack_sent.set()  # Prevent late ack
 
     response_text = result['text']
 
@@ -325,6 +371,26 @@ def _process_incoming(instance_name, data):
             'intent': result.get('intent', ''),
         },
     )
+
+    # --- Report usage to Stripe (no-op without Stripe key) ---
+    try:
+        stripe_service.report_usage(tenant_id, quantity=1)
+    except Exception as e:
+        log.error(f'Stripe usage report error: {e}')
+
+    # --- Generate conversation summary (async, non-blocking) ---
+    try:
+        from app.services import summary_service
+        all_messages = conv_db.get_message_history(conversation_id, limit=50)
+        if summary_service.should_generate_summary(conversation_id, len(all_messages)):
+            threading.Thread(
+                target=summary_service.generate_summary,
+                args=(conversation_id, tenant_id, all_messages, api_key),
+                name=f'summary-{conversation_id[:8]}',
+                daemon=True,
+            ).start()
+    except Exception as e:
+        log.error(f'Summary trigger error: {e}')
 
     # --- Extract voice persona config (with sensible defaults) ---
     persona = agent_config.get('persona', {})
@@ -424,9 +490,15 @@ def _process_incoming(instance_name, data):
             metadata={'push_name': push_name},
         )
 
+    # --- Track send health ---
+    from app.services import health_service
     if sent:
+        health_service.reset_failures(instance_name)
         log.info(f'[{instance_name}] {send_phone}: "{text[:40]}" -> [{reply_type}] "{response_text[:40]}"')
     else:
+        failures = health_service.record_failure(instance_name)
+        if failures >= config.WEBHOOK_MAX_FAILURES:
+            health_service.alert_admin(tenant_id, instance_name, 'send_failed')
         log.warning(f'[{instance_name}] Send failed, queued for retry: {send_phone}')
 
 

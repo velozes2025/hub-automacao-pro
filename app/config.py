@@ -49,6 +49,19 @@ class Config:
     DEFAULT_MAX_HISTORY = 10
     MAX_TOOL_ITERATIONS = 3
 
+    # --- Redis ---
+    REDIS_URL = os.getenv('REDIS_URL', '')
+    DEDUP_TTL_SECONDS = int(os.getenv('DEDUP_TTL_SECONDS', '86400'))  # 24h
+
+    # --- Stripe (Metered Billing — structure only, no-op without key) ---
+    STRIPE_API_KEY = os.getenv('STRIPE_API_KEY', '')
+    STRIPE_PRICE_ID = os.getenv('STRIPE_PRICE_ID', '')
+    STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET', '')
+
+    # --- Webhook Health ---
+    WEBHOOK_BACKUP_URL = os.getenv('WEBHOOK_BACKUP_URL', '')
+    WEBHOOK_MAX_FAILURES = int(os.getenv('WEBHOOK_MAX_FAILURES', '3'))
+
     # --- OLIVER.CORE v5.1 Engine ---
     ENGINE_V51_ENABLED = os.getenv('ENGINE_V51_ENABLED', 'true').lower() == 'true'
     ENGINE_V51_CACHE_ENABLED = os.getenv('ENGINE_V51_CACHE_ENABLED', 'true').lower() == 'true'

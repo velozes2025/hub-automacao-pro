@@ -24,6 +24,10 @@ def create_app():
     from app.db import init_pool
     init_pool()
 
+    # Initialize Redis (for dedup, health tracking)
+    from app.db.redis_client import init_redis
+    init_redis()
+
     # Start background workers
     from app.workers.manager import start_all_workers
     start_all_workers()

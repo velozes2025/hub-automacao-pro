@@ -92,10 +92,11 @@ import re
 # Voice settings optimized for young, charismatic, animated male voice
 # that is practically indistinguishable from a real human.
 ELEVENLABS_MODEL = 'eleven_multilingual_v2'
+ELEVENLABS_MODEL_TURBO = 'eleven_turbo_v2_5'  # Lower latency, faster inference
 ELEVENLABS_COST_PER_1K_CHARS = 0.30  # ~$0.30 per 1K chars (standard tier)
 ELEVENLABS_OUTPUT_FORMAT = 'mp3_44100_128'  # ElevenLabs best quality MP3
 ELEVENLABS_VOICE_SETTINGS = {
-    'stability': 0.45,           # Medium = natural variation without chaos, sounds like real person
+    'stability': 0.40,           # Reduced from 0.45: more natural variation, less robotic
     'similarity_boost': 0.85,    # High = keeps YOUR voice identity, faithful to cloned timbre
     'style': 0.15,               # Low = subtle expressiveness, avoids exaggeration on cloned voice
     'use_speaker_boost': True,   # Clearer, fuller voice presence
@@ -465,9 +466,13 @@ def _tts_elevenlabs(clean_text, voice_config, sentiment, language):
         return None
 
     try:
+        # Select model: turbo for speed (default), quality for premium tenants
+        use_turbo = voice_config.get('elevenlabs_turbo', True)
+        model_id = ELEVENLABS_MODEL_TURBO if use_turbo else ELEVENLABS_MODEL
+
         payload = {
             'text': clean_text,
-            'model_id': ELEVENLABS_MODEL,
+            'model_id': model_id,
             'voice_settings': dict(ELEVENLABS_VOICE_SETTINGS),
         }
 
