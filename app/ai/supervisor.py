@@ -50,6 +50,10 @@ def process(conversation, agent_config, language='pt', api_key=None, source='tex
     max_tokens = agent_config.get('max_tokens', config.DEFAULT_MAX_TOKENS)
     max_history = agent_config.get('max_history_messages', config.DEFAULT_MAX_HISTORY)
 
+    # Audio responses need more tokens for complete reasoning (begin, middle, end)
+    if source == 'audio':
+        max_tokens = max(max_tokens, config.DEFAULT_MAX_TOKENS_AUDIO)
+
     # Detect user sentiment from latest message
     last_user_msg = ''
     for msg in reversed(conversation.get('messages', [])):

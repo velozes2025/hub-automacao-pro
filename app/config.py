@@ -44,7 +44,8 @@ class Config:
     TYPING_MAX_MS = 3000
 
     # --- AI Defaults ---
-    DEFAULT_MAX_TOKENS = 150
+    DEFAULT_MAX_TOKENS = 300
+    DEFAULT_MAX_TOKENS_AUDIO = 800  # v5.0: natural speech w/ hesitations, pauses, reformulations
     DEFAULT_MAX_HISTORY = 10
     MAX_TOOL_ITERATIONS = 3
 
