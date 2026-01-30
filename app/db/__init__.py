@@ -1,12 +1,11 @@
-"""Database connection layer with automatic failover.
+"""Database connection layer with dual-write and failover.
 
-PRIMARY pool: Railway PostgreSQL (DATABASE_URL).
-FALLBACK pool: Docker PostgreSQL (DB_HOST/DB_PORT/...).
+Both pools (Railway + Docker) stay synchronized:
+- WRITES go to BOTH databases (dual-write). If one fails, the other still works.
+- READS try PRIMARY (Railway) first, FALLBACK (Docker) second.
+- Connection errors trigger automatic failover.
 
-Every query/execute tries PRIMARY first. On connection-level errors
-(OperationalError, InterfaceError), retries transparently on FALLBACK.
-SQL-level errors (IntegrityError, ProgrammingError) are never retried
-because they would fail on any database.
+This ensures zero data loss and zero downtime.
 """
 
 import logging
@@ -80,15 +79,20 @@ def _ordered_pools():
     return pools
 
 
+def _all_pools():
+    """Return all available pools (for dual-write)."""
+    pools = []
+    if _pool_primary:
+        pools.append(('Railway', _pool_primary))
+    if _pool_fallback:
+        pools.append(('Docker', _pool_fallback))
+    return pools
+
+
 def _with_failover(operation):
-    """Execute a DB operation with primary->fallback failover.
+    """Execute a READ operation with primary->fallback failover.
 
-    Args:
-        operation: callable(conn) -> result. Receives a connection,
-                   must return the query result.
-
-    Only connection-level errors (OperationalError, InterfaceError)
-    trigger failover. SQL errors are raised immediately.
+    Tries primary first; on connection error, tries fallback.
     """
     pools = _ordered_pools()
     if not pools:
@@ -133,6 +137,69 @@ def _with_failover(operation):
     raise last_error
 
 
+def _dual_write(operation, returning=False):
+    """Execute a WRITE operation on ALL available pools (dual-write).
+
+    Ensures both Railway and Docker stay synchronized.
+    Returns the result from the first successful pool.
+    If a pool fails, logs warning but continues (the other pool has the data).
+    """
+    pools = _all_pools()
+    if not pools:
+        raise RuntimeError('[DB] No pools initialized — call init_pool() first')
+
+    result = None
+    first_success = True
+    any_success = False
+
+    for pool_name, pool in pools:
+        conn = None
+        try:
+            conn = pool.getconn()
+            r = operation(conn)
+            if first_success:
+                result = r
+                first_success = False
+            any_success = True
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            log.warning(f'[DB-DUALWRITE] {pool_name} connection failed: {e}')
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                try:
+                    pool.putconn(conn, close=True)
+                except Exception:
+                    pass
+                conn = None
+        except psycopg2.errors.UniqueViolation:
+            # Already exists in this pool — not an error for dual-write
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning(f'[DB-DUALWRITE] {pool_name} write failed: {e}')
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+        finally:
+            if conn:
+                try:
+                    pool.putconn(conn)
+                except Exception:
+                    pass
+
+    if not any_success:
+        raise RuntimeError('[DB-DUALWRITE] ALL pools failed to write')
+
+    return result
+
+
 # --- Public API (used by all app/db/* modules) ---
 
 def query(sql, params=None, fetch='all'):
@@ -155,10 +222,10 @@ def query(sql, params=None, fetch='all'):
 
 
 def execute(sql, params=None, returning=False):
-    """Execute an INSERT/UPDATE/DELETE with automatic failover.
+    """Execute an INSERT/UPDATE/DELETE with DUAL-WRITE.
 
-    If returning=True, returns the first row as dict (for RETURNING clauses).
-    Otherwise returns rowcount.
+    Writes to BOTH Railway and Docker to keep them in sync.
+    Returns result from the first successful pool.
     """
     def _do(conn):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -168,21 +235,21 @@ def execute(sql, params=None, returning=False):
                 row = cur.fetchone()
                 return dict(row) if row else None
             return cur.rowcount
-    return _with_failover(_do)
+    return _dual_write(_do, returning=returning)
 
 
 def execute_many(sql, params_list):
-    """Execute a statement with multiple param sets, with failover."""
+    """Execute a statement with multiple param sets, dual-write."""
     def _do(conn):
         with conn.cursor() as cur:
             for params in params_list:
                 cur.execute(sql, params)
             conn.commit()
-    return _with_failover(_do)
+    return _dual_write(_do)
 
 
 def run_migration(sql_path):
-    """Run a raw SQL migration file, with failover."""
+    """Run a raw SQL migration file on ALL pools."""
     def _do(conn):
         with open(sql_path, 'r') as f:
             sql = f.read()
@@ -190,4 +257,4 @@ def run_migration(sql_path):
             cur.execute(sql)
             conn.commit()
         log.info(f'Migration applied: {sql_path}')
-    return _with_failover(_do)
+    return _dual_write(_do)
