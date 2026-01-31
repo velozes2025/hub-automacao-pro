@@ -19,7 +19,6 @@ from app.ai.oliver_core.intent_detector import detect_intent
 from app.ai.oliver_core.cache import try_cache
 from app.ai.oliver_core.compressor import build_compressed_prompt
 from app.ai.oliver_core.tiers import get_tier_config, resolve_max_history
-from app.ai.oliver_core.sistema_v51 import SISTEMA_V51_TEXT
 from app.ai.oliver_core import metrics
 
 log = logging.getLogger('oliver.engine')

@@ -126,7 +126,6 @@ def alert_admin(tenant_id, instance_name, error_type):
     # Send to backup webhook if configured
     if config.WEBHOOK_BACKUP_URL:
         try:
-            import json as _json
             requests.post(
                 config.WEBHOOK_BACKUP_URL,
                 json={

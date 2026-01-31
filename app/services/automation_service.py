@@ -1,12 +1,9 @@
 """Automation rules: reengagement, business hours, etc."""
 
-import re
 import time
 import logging
 
-from app.db import tenants as tenants_db
 from app.db import conversations as conv_db
-from app.db import automations as auto_db
 from app.channels import whatsapp, sender
 from app.ai.prompts import is_real_name, detect_language
 from app.config import config

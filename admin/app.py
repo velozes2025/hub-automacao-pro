@@ -8,7 +8,6 @@ Roles:
 
 import os
 import re
-import json
 import logging
 from functools import wraps
 from flask import Flask, request, redirect, url_for, render_template, \
