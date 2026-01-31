@@ -1,11 +1,11 @@
-"""Database connection layer with dual-write and failover.
+"""Database connection layer — single pool with failover.
 
-Both pools (Docker + Railway) stay synchronized:
-- WRITES go to BOTH databases (dual-write). If one fails, the other still works.
-- READS try PRIMARY (Docker) first, BACKUP (Railway) second.
-- Connection errors trigger automatic failover.
+Uses ONE primary database. Priority:
+  1. Docker Postgres (DB_HOST/DB_PORT) if available
+  2. Railway (DATABASE_URL) as fallback
 
-This ensures zero data loss and zero downtime.
+All reads and writes go to the SAME pool. No dual-write.
+This eliminates UUID desync, ghost bugs, and inconsistent state.
 """
 
 import logging
@@ -17,46 +17,47 @@ from app.config import config
 
 log = logging.getLogger('db')
 
-_pool_docker = None    # Docker (DB_HOST / DB_PORT / ...) — PRIMARY
-_pool_railway = None   # Railway (DATABASE_URL) — BACKUP
+_pool = None          # Single active pool
+_pool_name = None     # 'Docker' or 'Railway' (for logging)
+_pool_docker = None   # Keep Docker pool reference for get_pool() (Evolution schema)
 
 
 def init_pool():
-    """Initialize connection pools. Safe to call multiple times."""
-    global _pool_docker, _pool_railway
-    if _pool_docker is not None or _pool_railway is not None:
+    """Initialize connection pool. Safe to call multiple times."""
+    global _pool, _pool_name, _pool_docker
+    if _pool is not None:
         return
 
-    # --- PRIMARY: Docker Postgres (local, fast, all data) ---
-    try:
-        _pool_docker = psycopg2.pool.ThreadedConnectionPool(
-            minconn=2, maxconn=20,
-            host=config.DB_HOST, port=config.DB_PORT,
-            dbname=config.DB_NAME, user=config.DB_USER,
-            password=config.DB_PASSWORD,
-        )
-        log.info('[DB] PRIMARY pool (Docker) initialized')
-    except Exception as e:
-        log.error(f'[DB] PRIMARY pool (Docker) failed to init: {e}')
-        _pool_docker = None
+    # --- Try Docker Postgres first (local, fast) ---
+    if config.DB_HOST and config.DB_PASSWORD:
+        try:
+            _pool_docker = psycopg2.pool.ThreadedConnectionPool(
+                minconn=2, maxconn=20,
+                host=config.DB_HOST, port=config.DB_PORT,
+                dbname=config.DB_NAME, user=config.DB_USER,
+                password=config.DB_PASSWORD,
+            )
+            _pool = _pool_docker
+            _pool_name = 'Docker'
+            log.info('[DB] Pool initialized: Docker Postgres (primary)')
+            return
+        except Exception as e:
+            log.warning(f'[DB] Docker pool failed: {e}')
+            _pool_docker = None
 
-    # --- BACKUP: Railway via DATABASE_URL ---
+    # --- Fallback: Railway via DATABASE_URL ---
     if config.DATABASE_URL:
         try:
-            _pool_railway = psycopg2.pool.ThreadedConnectionPool(
+            _pool = psycopg2.pool.ThreadedConnectionPool(
                 minconn=2, maxconn=20, dsn=config.DATABASE_URL,
             )
-            label = 'BACKUP' if _pool_docker else 'ONLY'
-            log.info(f'[DB] {label} pool (Railway) initialized')
+            _pool_name = 'Railway'
+            log.info('[DB] Pool initialized: Railway (fallback)')
+            return
         except Exception as e:
-            if _pool_docker:
-                log.warning(f'[DB] BACKUP pool (Railway) failed: {e} — running Docker only')
-            else:
-                log.error('[DB] ALL pools failed to initialize')
-                raise
+            log.error(f'[DB] Railway pool failed: {e}')
 
-    if not _pool_docker and not _pool_railway:
-        raise RuntimeError('[DB] No database pools available')
+    raise RuntimeError('[DB] No database pool available. Check DB_HOST/DB_PASSWORD or DATABASE_URL.')
 
 
 def get_pool():
@@ -64,146 +65,53 @@ def get_pool():
 
     Used by lid.py to query Evolution API's internal schema
     (evolution."Contact", evolution."Message") which lives only
-    in the Docker Postgres, never in Railway.
+    in the Docker Postgres.
     """
-    return _pool_docker
+    return _pool_docker or _pool
 
 
-def _ordered_pools():
-    """Return pools in priority order: Docker first, Railway second."""
-    pools = []
-    if _pool_docker:
-        pools.append(('Docker', _pool_docker))
-    if _pool_railway:
-        pools.append(('Railway', _pool_railway))
-    return pools
+def _execute_op(operation):
+    """Execute a database operation with connection management."""
+    if not _pool:
+        raise RuntimeError('[DB] No pool initialized — call init_pool() first')
 
-
-def _all_pools():
-    """Return all available pools (for dual-write). Docker first."""
-    pools = []
-    if _pool_docker:
-        pools.append(('Docker', _pool_docker))
-    if _pool_railway:
-        pools.append(('Railway', _pool_railway))
-    return pools
-
-
-def _with_failover(operation):
-    """Execute a READ operation with primary->fallback failover.
-
-    Tries primary first; on connection error, tries fallback.
-    """
-    pools = _ordered_pools()
-    if not pools:
-        raise RuntimeError('[DB] No pools initialized — call init_pool() first')
-
-    last_error = None
-    for pool_name, pool in pools:
-        conn = None
-        try:
-            conn = pool.getconn()
-            result = operation(conn)
-            return result
-        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
-            last_error = e
-            log.warning(f'[DB-FAILOVER] {pool_name} connection failed: {e}')
-            if conn:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                try:
-                    pool.putconn(conn, close=True)
-                except Exception:
-                    pass
-                conn = None
-            continue
-        except Exception:
-            if conn:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-            raise
-        finally:
-            if conn:
-                try:
-                    pool.putconn(conn)
-                except Exception:
-                    pass
-
-    log.error(f'[DB-FAILOVER] ALL pools failed. Last error: {last_error}')
-    raise last_error
-
-
-def _dual_write(operation, returning=False):
-    """Execute a WRITE operation on ALL available pools (dual-write).
-
-    Ensures both Railway and Docker stay synchronized.
-    Returns the result from the first successful pool.
-    If a pool fails, logs warning but continues (the other pool has the data).
-    """
-    pools = _all_pools()
-    if not pools:
-        raise RuntimeError('[DB] No pools initialized — call init_pool() first')
-
-    result = None
-    first_success = True
-    any_success = False
-
-    for pool_name, pool in pools:
-        conn = None
-        try:
-            conn = pool.getconn()
-            r = operation(conn)
-            if first_success:
-                result = r
-                first_success = False
-            any_success = True
-        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
-            log.warning(f'[DB-DUALWRITE] {pool_name} connection failed: {e}')
-            if conn:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                try:
-                    pool.putconn(conn, close=True)
-                except Exception:
-                    pass
-                conn = None
-        except psycopg2.errors.UniqueViolation:
-            # Already exists in this pool — not an error for dual-write
-            if conn:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-        except Exception as e:
-            log.warning(f'[DB-DUALWRITE] {pool_name} write failed: {e}')
-            if conn:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-        finally:
-            if conn:
-                try:
-                    pool.putconn(conn)
-                except Exception:
-                    pass
-
-    if not any_success:
-        raise RuntimeError('[DB-DUALWRITE] ALL pools failed to write')
-
-    return result
+    conn = None
+    try:
+        conn = _pool.getconn()
+        result = operation(conn)
+        return result
+    except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+        log.error(f'[DB] {_pool_name} connection error: {e}')
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                _pool.putconn(conn, close=True)
+            except Exception:
+                pass
+            conn = None
+        raise
+    except Exception:
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+    finally:
+        if conn:
+            try:
+                _pool.putconn(conn)
+            except Exception:
+                pass
 
 
 # --- Public API (used by all app/db/* modules) ---
 
 def query(sql, params=None, fetch='all'):
-    """Execute a SELECT query with automatic failover.
+    """Execute a SELECT query.
 
     fetch: 'all' -> list of dicts, 'one' -> single dict or None, 'val' -> scalar
     """
@@ -218,15 +126,11 @@ def query(sql, params=None, fetch='all'):
                 return list(row.values())[0] if row else None
             else:
                 return [dict(r) for r in cur.fetchall()]
-    return _with_failover(_do)
+    return _execute_op(_do)
 
 
 def execute(sql, params=None, returning=False):
-    """Execute an INSERT/UPDATE/DELETE with DUAL-WRITE.
-
-    Writes to BOTH Railway and Docker to keep them in sync.
-    Returns result from the first successful pool.
-    """
+    """Execute an INSERT/UPDATE/DELETE on the single active pool."""
     def _do(conn):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, params)
@@ -235,21 +139,21 @@ def execute(sql, params=None, returning=False):
                 row = cur.fetchone()
                 return dict(row) if row else None
             return cur.rowcount
-    return _dual_write(_do, returning=returning)
+    return _execute_op(_do)
 
 
 def execute_many(sql, params_list):
-    """Execute a statement with multiple param sets, dual-write."""
+    """Execute a statement with multiple param sets."""
     def _do(conn):
         with conn.cursor() as cur:
             for params in params_list:
                 cur.execute(sql, params)
             conn.commit()
-    return _dual_write(_do)
+    return _execute_op(_do)
 
 
 def run_migration(sql_path):
-    """Run a raw SQL migration file on ALL pools."""
+    """Run a raw SQL migration file."""
     def _do(conn):
         with open(sql_path, 'r') as f:
             sql = f.read()
@@ -257,4 +161,4 @@ def run_migration(sql_path):
             cur.execute(sql)
             conn.commit()
         log.info(f'Migration applied: {sql_path}')
-    return _dual_write(_do)
+    return _execute_op(_do)

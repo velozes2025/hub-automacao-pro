@@ -7,7 +7,6 @@ RULE: No client goes without a response. No new lead is lost.
 """
 
 import json
-import time
 import logging
 import threading
 
@@ -270,12 +269,7 @@ def _process_incoming(instance_name, data):
                 whatsapp.send_message(instance_name, send_phone, outside_msg)
         return
 
-    # --- Human-like read delay (people read the message before typing) ---
-    import random
-    read_delay = random.uniform(1.5, 3.5)
-    time.sleep(read_delay)
-
-    # --- Typing indicator ---
+    # --- Typing indicator (no blocking sleep — the AI call provides natural delay) ---
     can_send = not lid_unresolved
     if can_send:
         whatsapp.set_typing(instance_name, send_phone, True)
@@ -411,8 +405,7 @@ def _process_incoming(instance_name, data):
         )
         log.info(f'[{instance_name}] Response PENDING for LID {phone}')
 
-        # Late resolution attempt
-        time.sleep(2)
+        # Late resolution attempt (no blocking sleep — lid_worker handles retries)
         resolved_late = lid_resolver.resolve(account_id, instance_name, phone)
         if resolved_late:
             log.info(f'[{instance_name}] Late LID resolution: {phone} -> {resolved_late}')
@@ -521,21 +514,16 @@ def _deliver_pending_lid_responses(account, instance_name, lid_jid, phone):
             else:
                 msg = 'Oi! Desculpa a demora, tive um problema tecnico. Ja to de volta, no que posso ajudar?'
             whatsapp.set_typing(instance_name, phone, True)
-            time.sleep(2.5)
             whatsapp.send_message(instance_name, phone, msg)
         elif len(matched) == 1:
             whatsapp.set_typing(instance_name, phone, True)
-            time.sleep(2.0)
             whatsapp.send_message(instance_name, phone, matched[0]['content'])
         else:
             # Multiple pending: send explanation + last response
             whatsapp.set_typing(instance_name, phone, True)
-            time.sleep(2.0)
             explanation = f'{nome}, desculpa o atraso tecnico! Ja normalizou.' if nome else 'Desculpa o atraso tecnico! Ja normalizou.'
             whatsapp.send_message(instance_name, phone, explanation)
-            time.sleep(1.5)
             whatsapp.set_typing(instance_name, phone, True)
-            time.sleep(2.0)
             whatsapp.send_message(instance_name, phone, matched[-1]['content'])
 
         # Mark all as delivered (tenant-scoped)
