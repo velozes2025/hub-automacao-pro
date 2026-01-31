@@ -77,6 +77,15 @@ class Config:
     ENGINE_V60_REFLECTION_ENABLED = os.getenv('ENGINE_V60_REFLECTION_ENABLED', 'true').lower() == 'true'
     ENGINE_V60_STATE_MACHINE_ENABLED = os.getenv('ENGINE_V60_STATE_MACHINE_ENABLED', 'true').lower() == 'true'
 
+    # --- Airtable (Lead sync) ---
+    AIRTABLE_API_KEY = os.getenv('AIRTABLE_API_KEY', '')
+    AIRTABLE_BASE_ID = os.getenv('AIRTABLE_BASE_ID', '')
+    AIRTABLE_TABLE_NAME = os.getenv('AIRTABLE_TABLE_NAME', 'Leads')
+
+    # --- Gmail (Email tool) ---
+    GMAIL_ADDRESS = os.getenv('GMAIL_ADDRESS', '')
+    GMAIL_APP_PASSWORD = os.getenv('GMAIL_APP_PASSWORD', '')  # Google App Password, NOT account password
+
     # --- Pricing ---
     PRICING = {
         'claude-3-haiku-20240307': {'input': 0.00000025, 'output': 0.00000125},

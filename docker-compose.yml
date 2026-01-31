@@ -140,6 +140,12 @@ services:
       - ENGINE_V60_MEMORY_ENABLED=${ENGINE_V60_MEMORY_ENABLED:-true}
       - ENGINE_V60_REFLECTION_ENABLED=${ENGINE_V60_REFLECTION_ENABLED:-true}
       - ENGINE_V60_STATE_MACHINE_ENABLED=${ENGINE_V60_STATE_MACHINE_ENABLED:-true}
+      # Airtable + Gmail (opcional — no-op sem chave)
+      - AIRTABLE_API_KEY=${AIRTABLE_API_KEY:-}
+      - AIRTABLE_BASE_ID=${AIRTABLE_BASE_ID:-}
+      - AIRTABLE_TABLE_NAME=${AIRTABLE_TABLE_NAME:-Leads}
+      - GMAIL_ADDRESS=${GMAIL_ADDRESS:-}
+      - GMAIL_APP_PASSWORD=${GMAIL_APP_PASSWORD:-}
     networks:
       - hub-network
     depends_on:
