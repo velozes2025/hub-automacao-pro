@@ -188,6 +188,104 @@ TOOL_DEFINITIONS = {
             'required': ['to', 'subject', 'body'],
         },
     },
+    'sheets_add_row': {
+        'name': 'sheets_add_row',
+        'description': (
+            'Adiciona uma linha na planilha Google Sheets. '
+            'Use para registrar leads, atendimentos, vendas, ou qualquer dado '
+            'que precise ser salvo na planilha. Os valores sao adicionados como '
+            'uma nova linha no final da aba configurada.'
+        ),
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'values': {
+                    'type': 'array',
+                    'items': {'type': 'string'},
+                    'description': (
+                        'Lista de valores para cada coluna. Ex: '
+                        '["Joao Silva", "11999887766", "joao@email.com", "Interessado no plano Pro"]'
+                    ),
+                },
+            },
+            'required': ['values'],
+        },
+    },
+    'sheets_search': {
+        'name': 'sheets_search',
+        'description': (
+            'Busca dados na planilha Google Sheets. '
+            'Use para consultar informacoes de clientes, produtos, precos, '
+            'estoque, ou qualquer dado que esteja na planilha. '
+            'Retorna as linhas que contenham o termo buscado.'
+        ),
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'search_term': {
+                    'type': 'string',
+                    'description': 'Texto para buscar na planilha (nome, telefone, produto, etc)',
+                },
+            },
+            'required': ['search_term'],
+        },
+    },
+    'calendar_create_event': {
+        'name': 'calendar_create_event',
+        'description': (
+            'Cria um evento/agendamento no Google Calendar. '
+            'Use quando o cliente quiser agendar uma reuniao, demonstracao, '
+            'consulta, visita, ou qualquer compromisso. '
+            'Pergunte data, horario e duracao se nao souber.'
+        ),
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'title': {
+                    'type': 'string',
+                    'description': 'Titulo do evento (ex: "Reuniao com Joao - Demo do produto")',
+                },
+                'date': {
+                    'type': 'string',
+                    'description': 'Data no formato YYYY-MM-DD (ex: 2025-06-15)',
+                },
+                'start_time': {
+                    'type': 'string',
+                    'description': 'Horario de inicio no formato HH:MM (ex: 14:00)',
+                },
+                'duration_minutes': {
+                    'type': 'integer',
+                    'description': 'Duracao em minutos (padrao: 60)',
+                },
+                'description': {
+                    'type': 'string',
+                    'description': 'Descricao do evento (telefone do cliente, contexto, etc)',
+                },
+                'attendee_email': {
+                    'type': 'string',
+                    'description': 'Email do participante (opcional — envia convite)',
+                },
+            },
+            'required': ['title', 'date', 'start_time'],
+        },
+    },
+    'calendar_list_events': {
+        'name': 'calendar_list_events',
+        'description': (
+            'Lista os proximos eventos do Google Calendar. '
+            'Use para verificar disponibilidade de agenda antes de agendar, '
+            'ou quando o cliente perguntar horarios livres.'
+        ),
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'date': {
+                    'type': 'string',
+                    'description': 'Data para verificar no formato YYYY-MM-DD (ex: 2025-06-15). Se vazio, mostra os proximos 7 dias.',
+                },
+            },
+        },
+    },
 }
 
 
@@ -208,6 +306,10 @@ def execute_tool(tool_name, tool_input, context=None):
         'airtable_save_lead': _exec_airtable_save_lead,
         'airtable_search': _exec_airtable_search,
         'send_email': _exec_send_email,
+        'sheets_add_row': _exec_sheets_add_row,
+        'sheets_search': _exec_sheets_search,
+        'calendar_create_event': _exec_calendar_create_event,
+        'calendar_list_events': _exec_calendar_list_events,
     }
     executor = executors.get(tool_name)
     if not executor:
@@ -495,3 +597,250 @@ def _exec_send_email(inputs, ctx):
     except Exception as e:
         log.error(f'[GMAIL] Send error: {e}')
         return f'Erro ao enviar email: {e}'
+
+
+# --- Google Auth Helper ---
+
+_google_creds = None
+
+def _get_google_credentials():
+    """Load Google Service Account credentials (cached)."""
+    global _google_creds
+    if _google_creds:
+        return _google_creds
+    from app.config import config
+    if not config.GOOGLE_SERVICE_ACCOUNT_FILE:
+        return None
+    try:
+        from google.oauth2 import service_account
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/calendar',
+        ]
+        _google_creds = service_account.Credentials.from_service_account_file(
+            config.GOOGLE_SERVICE_ACCOUNT_FILE, scopes=scopes,
+        )
+        return _google_creds
+    except Exception as e:
+        log.error(f'[GOOGLE] Failed to load credentials: {e}')
+        return None
+
+
+# --- Google Sheets Tools ---
+
+def _exec_sheets_add_row(inputs, ctx):
+    from app.config import config
+    creds = _get_google_credentials()
+    if not creds:
+        return ('Google Sheets nao configurado. Defina GOOGLE_SERVICE_ACCOUNT_FILE '
+                'e GOOGLE_SHEETS_ID no .env')
+    if not config.GOOGLE_SHEETS_ID:
+        return 'GOOGLE_SHEETS_ID nao definido no .env'
+
+    values = inputs.get('values', [])
+    if not values:
+        return 'Nenhum valor fornecido para adicionar.'
+
+    try:
+        from googleapiclient.discovery import build
+        service = build('sheets', 'v4', credentials=creds)
+        sheet_range = config.GOOGLE_SHEETS_RANGE
+        body = {'values': [values]}
+
+        result = service.spreadsheets().values().append(
+            spreadsheetId=config.GOOGLE_SHEETS_ID,
+            range=sheet_range,
+            valueInputOption='USER_ENTERED',
+            insertDataOption='INSERT_ROWS',
+            body=body,
+        ).execute()
+
+        updated = result.get('updates', {}).get('updatedRows', 0)
+        log.info(f'[SHEETS] Added {updated} row(s): {values[:3]}...')
+        return f'Linha adicionada na planilha com sucesso. Valores: {", ".join(str(v) for v in values[:5])}'
+
+    except Exception as e:
+        log.error(f'[SHEETS] Add row error: {e}')
+        return f'Erro ao adicionar na planilha: {e}'
+
+
+def _exec_sheets_search(inputs, ctx):
+    from app.config import config
+    creds = _get_google_credentials()
+    if not creds:
+        return ('Google Sheets nao configurado. Defina GOOGLE_SERVICE_ACCOUNT_FILE '
+                'e GOOGLE_SHEETS_ID no .env')
+    if not config.GOOGLE_SHEETS_ID:
+        return 'GOOGLE_SHEETS_ID nao definido no .env'
+
+    search_term = inputs.get('search_term', '')
+    if not search_term:
+        return 'Termo de busca nao fornecido.'
+
+    try:
+        from googleapiclient.discovery import build
+        service = build('sheets', 'v4', credentials=creds)
+        sheet_range = config.GOOGLE_SHEETS_RANGE
+
+        result = service.spreadsheets().values().get(
+            spreadsheetId=config.GOOGLE_SHEETS_ID,
+            range=sheet_range,
+        ).execute()
+
+        all_rows = result.get('values', [])
+        if not all_rows:
+            return 'Planilha vazia.'
+
+        # First row is header
+        header = all_rows[0] if all_rows else []
+        search_lower = search_term.lower()
+
+        matches = []
+        for row in all_rows[1:]:
+            row_text = ' '.join(str(cell) for cell in row).lower()
+            if search_lower in row_text:
+                row_dict = {header[i]: row[i] for i in range(min(len(header), len(row)))}
+                matches.append(row_dict)
+
+        if not matches:
+            return f'Nenhum resultado encontrado para "{search_term}" na planilha.'
+
+        results = []
+        for m in matches[:10]:
+            parts = [f'{k}: {v}' for k, v in m.items() if v]
+            results.append('- ' + ' | '.join(parts))
+
+        return f'Encontrados {len(matches)} resultado(s):\n' + '\n'.join(results)
+
+    except Exception as e:
+        log.error(f'[SHEETS] Search error: {e}')
+        return f'Erro ao buscar na planilha: {e}'
+
+
+# --- Google Calendar Tools ---
+
+def _exec_calendar_create_event(inputs, ctx):
+    from app.config import config
+    creds = _get_google_credentials()
+    if not creds:
+        return ('Google Calendar nao configurado. Defina GOOGLE_SERVICE_ACCOUNT_FILE no .env')
+
+    title = inputs.get('title', '')
+    date = inputs.get('date', '')
+    start_time = inputs.get('start_time', '')
+    duration = inputs.get('duration_minutes', 60)
+    description = inputs.get('description', '')
+    attendee_email = inputs.get('attendee_email', '')
+
+    if not title or not date or not start_time:
+        return 'Titulo, data e horario sao obrigatorios.'
+
+    try:
+        from googleapiclient.discovery import build
+        from datetime import datetime, timedelta
+
+        # Parse date/time
+        start_dt = datetime.strptime(f'{date} {start_time}', '%Y-%m-%d %H:%M')
+        end_dt = start_dt + timedelta(minutes=duration)
+
+        # Build event
+        event = {
+            'summary': title,
+            'start': {
+                'dateTime': start_dt.strftime('%Y-%m-%dT%H:%M:%S'),
+                'timeZone': 'America/Sao_Paulo',
+            },
+            'end': {
+                'dateTime': end_dt.strftime('%Y-%m-%dT%H:%M:%S'),
+                'timeZone': 'America/Sao_Paulo',
+            },
+        }
+        if description:
+            event['description'] = description
+        if attendee_email:
+            event['attendees'] = [{'email': attendee_email}]
+
+        service = build('calendar', 'v3', credentials=creds)
+        calendar_id = config.GOOGLE_CALENDAR_ID
+
+        result = service.events().insert(
+            calendarId=calendar_id,
+            body=event,
+            sendUpdates='all' if attendee_email else 'none',
+        ).execute()
+
+        event_link = result.get('htmlLink', '')
+        log.info(f'[CALENDAR] Event created: {title} on {date} {start_time}')
+        return (
+            f'Evento criado com sucesso!\n'
+            f'Titulo: {title}\n'
+            f'Data: {date} as {start_time}\n'
+            f'Duracao: {duration} minutos'
+            + (f'\nConvite enviado para: {attendee_email}' if attendee_email else '')
+            + (f'\nLink: {event_link}' if event_link else '')
+        )
+
+    except ValueError:
+        return f'Formato de data/hora invalido. Use YYYY-MM-DD para data e HH:MM para hora.'
+    except Exception as e:
+        log.error(f'[CALENDAR] Create event error: {e}')
+        return f'Erro ao criar evento: {e}'
+
+
+def _exec_calendar_list_events(inputs, ctx):
+    from app.config import config
+    creds = _get_google_credentials()
+    if not creds:
+        return ('Google Calendar nao configurado. Defina GOOGLE_SERVICE_ACCOUNT_FILE no .env')
+
+    date = inputs.get('date', '')
+
+    try:
+        from googleapiclient.discovery import build
+        from datetime import datetime, timedelta
+
+        service = build('calendar', 'v3', credentials=creds)
+        calendar_id = config.GOOGLE_CALENDAR_ID
+
+        if date:
+            time_min = datetime.strptime(date, '%Y-%m-%d')
+            time_max = time_min + timedelta(days=1)
+        else:
+            time_min = datetime.now()
+            time_max = time_min + timedelta(days=7)
+
+        events_result = service.events().list(
+            calendarId=calendar_id,
+            timeMin=time_min.strftime('%Y-%m-%dT00:00:00-03:00'),
+            timeMax=time_max.strftime('%Y-%m-%dT23:59:59-03:00'),
+            maxResults=20,
+            singleEvents=True,
+            orderBy='startTime',
+        ).execute()
+
+        events = events_result.get('items', [])
+        if not events:
+            if date:
+                return f'Nenhum evento encontrado em {date}. Agenda livre!'
+            return 'Nenhum evento nos proximos 7 dias. Agenda livre!'
+
+        results = []
+        for event in events:
+            start = event['start'].get('dateTime', event['start'].get('date', ''))
+            # Parse for display
+            if 'T' in start:
+                dt = start.split('T')
+                dia = dt[0]
+                hora = dt[1][:5]
+                results.append(f'- {dia} {hora}: {event.get("summary", "Sem titulo")}')
+            else:
+                results.append(f'- {start} (dia inteiro): {event.get("summary", "Sem titulo")}')
+
+        header = f'Agenda para {date}:' if date else 'Proximos eventos (7 dias):'
+        return header + '\n' + '\n'.join(results)
+
+    except ValueError:
+        return f'Formato de data invalido. Use YYYY-MM-DD (ex: 2025-06-15).'
+    except Exception as e:
+        log.error(f'[CALENDAR] List events error: {e}')
+        return f'Erro ao listar eventos: {e}'

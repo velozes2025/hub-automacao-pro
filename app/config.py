@@ -86,6 +86,14 @@ class Config:
     GMAIL_ADDRESS = os.getenv('GMAIL_ADDRESS', '')
     GMAIL_APP_PASSWORD = os.getenv('GMAIL_APP_PASSWORD', '')  # Google App Password, NOT account password
 
+    # --- Google Sheets (Spreadsheet tool) ---
+    GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv('GOOGLE_SERVICE_ACCOUNT_FILE', '')  # Path to JSON key
+    GOOGLE_SHEETS_ID = os.getenv('GOOGLE_SHEETS_ID', '')  # Spreadsheet ID from URL
+    GOOGLE_SHEETS_RANGE = os.getenv('GOOGLE_SHEETS_RANGE', 'Leads')  # Sheet/tab name
+
+    # --- Google Calendar ---
+    GOOGLE_CALENDAR_ID = os.getenv('GOOGLE_CALENDAR_ID', 'primary')  # Calendar ID or 'primary'
+
     # --- Pricing ---
     PRICING = {
         'claude-3-haiku-20240307': {'input': 0.00000025, 'output': 0.00000125},

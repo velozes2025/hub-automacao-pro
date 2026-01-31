@@ -1,7 +1,9 @@
-# Ambiente
+# Ambiente e credenciais
 .env
 .env.local
 .env.*.local
+google-credentials.json
+*-credentials.json
 
 # Python
 __pycache__/

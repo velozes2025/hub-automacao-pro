@@ -115,6 +115,8 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+    volumes:
+      - ./google-credentials.json:/app/google-credentials.json:ro
     environment:
       - DATABASE_URL=${DATABASE_URL:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
@@ -140,12 +142,16 @@ services:
       - ENGINE_V60_MEMORY_ENABLED=${ENGINE_V60_MEMORY_ENABLED:-true}
       - ENGINE_V60_REFLECTION_ENABLED=${ENGINE_V60_REFLECTION_ENABLED:-true}
       - ENGINE_V60_STATE_MACHINE_ENABLED=${ENGINE_V60_STATE_MACHINE_ENABLED:-true}
-      # Airtable + Gmail (opcional — no-op sem chave)
+      # Airtable + Gmail + Google Sheets + Calendar (opcional — no-op sem chave)
       - AIRTABLE_API_KEY=${AIRTABLE_API_KEY:-}
       - AIRTABLE_BASE_ID=${AIRTABLE_BASE_ID:-}
       - AIRTABLE_TABLE_NAME=${AIRTABLE_TABLE_NAME:-Leads}
       - GMAIL_ADDRESS=${GMAIL_ADDRESS:-}
       - GMAIL_APP_PASSWORD=${GMAIL_APP_PASSWORD:-}
+      - GOOGLE_SERVICE_ACCOUNT_FILE=${GOOGLE_SERVICE_ACCOUNT_FILE:-}
+      - GOOGLE_SHEETS_ID=${GOOGLE_SHEETS_ID:-}
+      - GOOGLE_SHEETS_RANGE=${GOOGLE_SHEETS_RANGE:-Leads}
+      - GOOGLE_CALENDAR_ID=${GOOGLE_CALENDAR_ID:-primary}
     networks:
       - hub-network
     depends_on:
