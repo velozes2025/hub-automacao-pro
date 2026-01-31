@@ -29,8 +29,19 @@ _GREETING = {
 }
 
 
-def _get_local_time(phone):
-    """Detect local time from phone number and return prompt hint."""
+_DIAS_SEMANA = {
+    0: 'segunda-feira', 1: 'terca-feira', 2: 'quarta-feira',
+    3: 'quinta-feira', 4: 'sexta-feira', 5: 'sabado', 6: 'domingo',
+}
+
+_DAYS_OF_WEEK_EN = {
+    0: 'Monday', 1: 'Tuesday', 2: 'Wednesday',
+    3: 'Thursday', 4: 'Friday', 5: 'Saturday', 6: 'Sunday',
+}
+
+
+def _get_local_time(phone, language='pt'):
+    """Detect local time from phone number and return prompt hint with full date."""
     if not phone:
         return ''
     # Strip non-digits
@@ -62,7 +73,15 @@ def _get_local_time(phone):
     else:
         period = 'evening'
 
-    return f'HORA_LOCAL:{now.strftime("%H:%M")} SAUDACAO_CORRETA:{_GREETING[period].get("pt", "oi")}'
+    dia_semana = _DIAS_SEMANA.get(now.weekday(), '')
+    day_en = _DAYS_OF_WEEK_EN.get(now.weekday(), '')
+    data_formatada = now.strftime('%d/%m/%Y')
+
+    return (
+        f'DATA_HOJE:{data_formatada} ({dia_semana}/{day_en}) '
+        f'HORA_LOCAL:{now.strftime("%H:%M")} '
+        f'SAUDACAO_CORRETA:{_GREETING[period].get("pt", "oi")}'
+    )
 
 
 # --- Language labels (compact) ---
@@ -136,11 +155,19 @@ def build_compressed_prompt(phase, intent_type, agent_config, conversation,
     lang_label = _LANG_LABELS.get(language, _LANG_LABELS['pt'])
     parts.append(lang_label)
 
-    # Local time for the contact (based on phone number)
+    # Local time and date for the contact (based on phone number)
     contact_phone = conversation.get('contact_phone', '')
-    local_time = _get_local_time(contact_phone)
+    local_time = _get_local_time(contact_phone, language)
     if local_time:
         parts.append(local_time)
+
+    # New lead indicator
+    if conversation.get('is_new_lead'):
+        parts.append(
+            'LEAD_NOVO:Este contato esta falando pela PRIMEIRA VEZ. '
+            'Trate como lead novo. Colete: nome, empresa, ramo, necessidade. '
+            'Seja acolhedor e curioso.'
+        )
 
     # Sentiment (only if non-neutral)
     if sentiment and sentiment != 'neutral':

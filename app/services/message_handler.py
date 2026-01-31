@@ -22,6 +22,7 @@ from app.ai.oliver_core.engine import process_v60
 from app.ai.prompts import detect_language, is_real_name
 from app.channels import whatsapp, lid_resolver, sender, transcriber
 from app.services import lead_service
+from app.services import admin_control
 
 log = logging.getLogger('services.handler')
 
@@ -101,6 +102,10 @@ def handle_webhook(payload):
 
         # Skip outgoing messages (but learn LID mappings from them)
         if data.get('key', {}).get('fromMe', False):
+            # Check for admin commands BEFORE skipping
+            if admin_control.is_admin_command(data, instance_name):
+                _handle_admin_command(instance_name, data)
+                return
             _handle_sent_message(instance_name, data)
             return
 
@@ -108,6 +113,9 @@ def handle_webhook(payload):
 
     except Exception as e:
         log.error(f'Webhook handler error: {e}', exc_info=True)
+        admin_control.log_admin_error(
+            payload.get('instance', ''), f'{type(e).__name__}: {str(e)[:200]}'
+        )
 
 
 def _handle_contacts_event(payload):
@@ -135,6 +143,40 @@ def _handle_sent_message(instance_name, data):
     lid_resolver.learn_from_sent_message(account['id'], instance_name, data)
 
 
+def _handle_admin_command(instance_name, data):
+    """Process an admin command received via WhatsApp."""
+    try:
+        from app.db.redis_client import get_redis
+        r = get_redis()
+        if not r:
+            log.warning('[ADMIN] Redis unavailable, cannot process admin command')
+            return
+
+        account = tenants_db.get_whatsapp_account_by_instance(instance_name)
+        if not account:
+            return
+
+        msg = data.get('message', {})
+        text = (msg.get('conversation')
+                or msg.get('extendedTextMessage', {}).get('text', ''))
+        if not text:
+            return
+
+        log.info(f'[ADMIN] Command: {text[:80]}')
+
+        controller = admin_control.AdminController(instance_name, account, r)
+        response = controller.handle_command(text)
+
+        if response:
+            # Reply to the chat where the admin typed the command
+            remote_jid = data.get('key', {}).get('remoteJid', '')
+            reply_phone = remote_jid.split('@')[0] if '@' in remote_jid else ''
+            if reply_phone:
+                whatsapp.send_message(instance_name, reply_phone, response)
+    except Exception as e:
+        log.error(f'[ADMIN] Error: {e}', exc_info=True)
+
+
 def _process_incoming(instance_name, data):
     """Process an incoming message through the full pipeline."""
     # --- DEDUPLICATION: check if message_id already processed ---
@@ -147,7 +189,20 @@ def _process_incoming(instance_name, data):
             if not r.set(dedup_key, '1', nx=True, ex=config.DEDUP_TTL_SECONDS):
                 log.debug(f'[DEDUP] Duplicate message ignored: {message_id}')
                 return
+
+            # --- CONTACT BLOCK: skip auto-reply if contact is blocked ---
+            phone_check = _get_phone(data)
+            if phone_check:
+                block_key = f'block:{instance_name}:{phone_check}'
+                if r.get(block_key):
+                    log.info(f'[BLOCK] Contact {phone_check} is blocked, skipping auto-reply')
+                    return
         # If Redis unavailable, proceed without dedup (graceful degradation)
+
+    # --- ADMIN: Global pause check ---
+    if admin_control.is_globally_paused(instance_name):
+        log.info(f'[ADMIN] Bot paused globally, skipping: {instance_name}')
+        return
 
     # Extract content (text or transcribed audio)
     text, source = _extract_content(data, instance_name)
@@ -158,6 +213,18 @@ def _process_incoming(instance_name, data):
 
     phone = _get_phone(data)
     if not phone:
+        return
+
+    # --- ADMIN: Per-chat pause/takeover check ---
+    if admin_control.is_chat_paused(instance_name, phone):
+        log.info(f'[ADMIN] Chat paused for {phone}')
+        return
+    if admin_control.is_chat_taken_over(instance_name, phone):
+        log.info(f'[ADMIN] Chat in takeover for {phone}')
+        from app.db.redis_client import get_redis as _get_redis_adm
+        _r_adm = _get_redis_adm()
+        if _r_adm:
+            _r_adm.set(f'admin:last_chat:{instance_name}', phone, ex=3600)
         return
 
     push_name = data.get('pushName', '')
@@ -289,8 +356,17 @@ def _process_incoming(instance_name, data):
             'max_tokens': 150,
             'max_history_messages': 10,
             'persona': {},
-            'tools_enabled': '["web_search"]',
+            'tools_enabled': '["web_search","schedule_meeting","airtable_read","airtable_create","airtable_update","google_calendar_list","google_calendar_check","send_email"]',
         }
+
+    # --- ADMIN: Runtime prompt override ---
+    from app.db.redis_client import get_redis as _get_redis_prompt
+    _r_prompt = _get_redis_prompt()
+    if _r_prompt:
+        _prompt_override = _r_prompt.get(f'admin:prompt_override:{instance_name}')
+        if _prompt_override:
+            agent_config = dict(agent_config)
+            agent_config['system_prompt'] = _prompt_override
 
     # --- Load conversation context for AI ---
     max_history = agent_config.get('max_history_messages', 10)
@@ -301,6 +377,10 @@ def _process_incoming(instance_name, data):
     conversation_ctx['messages'] = history
     conversation_ctx['lead'] = lead
     conversation_ctx['tenant_name'] = account.get('tenant_name', '')
+
+    # Detect if this is a brand new lead (first interaction)
+    is_new_lead = (not lead or lead.get('stage') == 'new') and len(history) <= 2
+    conversation_ctx['is_new_lead'] = is_new_lead
 
     # Per-tenant API key
     api_key = account.get('tenant_anthropic_key')
@@ -480,6 +560,14 @@ def _process_incoming(instance_name, data):
             whatsapp_account_id=account_id,
             metadata={'push_name': push_name},
         )
+
+    # --- Track for admin /reply and /correct ---
+    from app.db.redis_client import get_redis as _get_redis_track
+    _r_track = _get_redis_track()
+    if _r_track:
+        _r_track.set(f'admin:last_chat:{instance_name}', send_phone, ex=3600)
+        _r_track.set(f'admin:last_bot_msg:{instance_name}:{send_phone}',
+                     response_text[:2000], ex=3600)
 
     # --- Track send health ---
     from app.services import health_service

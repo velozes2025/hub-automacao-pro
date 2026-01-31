@@ -177,6 +177,17 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt',
         'DESISTENCIA: Se o cliente parou de responder, max 2 tentativas, depois aguarde. '
     )
 
+    # Real-time data rule
+    realtime_rule = (
+        'DADOS EM TEMPO REAL: Os dados que voce recebe nesta conversa representam o '
+        'estado ATUAL do sistema. NUNCA invente nomes, datas, horarios, emails ou '
+        'qualquer dado do cliente. Se faltou informacao, PERGUNTE. '
+        'AGENDAMENTO: Para reunioes, SEMPRE use a ferramenta schedule_meeting para validar '
+        'a data e o dia da semana automaticamente. NUNCA confirme uma reuniao sem validar. '
+        'FRASES COMPLETAS: NUNCA envie mensagem com frase cortada ou incompleta. '
+        'Toda mensagem deve terminar com sentido completo. '
+    )
+
     # Brevity, variation, and strategic sales intelligence
     brevity_rule = (
         'REGRA DE OURO: Curto, estrategico e humano. '
@@ -200,14 +211,26 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt',
         'Faca perguntas inteligentes que mostram que voce entende do negocio dele. '
     )
 
+    # Date context
+    from datetime import datetime, timezone, timedelta
+    now_br = datetime.now(timezone(timedelta(hours=-3)))
+    _dias = {0: 'segunda-feira', 1: 'terca-feira', 2: 'quarta-feira',
+             3: 'quinta-feira', 4: 'sexta-feira', 5: 'sabado', 6: 'domingo'}
+    date_ctx = (
+        f'DATA DE HOJE: {now_br.strftime("%d/%m/%Y")} ({_dias.get(now_br.weekday(), "")}) '
+        f'HORA: {now_br.strftime("%H:%M")}. '
+    )
+
     # Context block
     total_msgs = len(messages)
     if total_msgs > 1:
         ctx = (
-            f'\n\nCONTEXTO: Ja trocaram {total_msgs} msgs. '
+            f'\n\n{date_ctx}'
+            f'CONTEXTO: Ja trocaram {total_msgs} msgs. '
             f'{lang_rule} '
             f'{creator_rule}'
             f'{checkpoint_rule}'
+            f'{realtime_rule}'
             f'{brevity_rule}'
             f'{f"Nome do cliente: {nome}. Chame pelo nome. " if nome else nome_instrucao}'
             f'NAO se apresente de novo. Continue a conversa naturalmente. '
@@ -216,9 +239,11 @@ def build_system_prompt(agent_config, conversation, lead=None, language='pt',
     else:
         persona_name = persona.get('name', 'Oliver')
         ctx = (
-            f'\n\nCONTEXTO: Primeiro contato. '
+            f'\n\n{date_ctx}'
+            f'CONTEXTO: Primeiro contato. '
             f'{lang_rule} '
             f'{creator_rule}'
+            f'{realtime_rule}'
             f'{brevity_rule}'
             f'{f"Nome do cliente: {nome}. " if nome else nome_instrucao}'
             f'Se apresente: {persona_name}. '

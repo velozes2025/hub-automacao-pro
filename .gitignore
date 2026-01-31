@@ -23,5 +23,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Credenciais
+app/credentials/
+*.json.bak
+
 # Imagens temporarias
 *.png

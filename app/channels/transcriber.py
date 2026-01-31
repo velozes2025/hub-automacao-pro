@@ -137,6 +137,52 @@ def _prepare_text_for_speech(text):
                r'\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U0001F900-\U0001F9FF'
                r'\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002600-\U000026FF]+', '', t)
 
+    # --- Convert dates, times and currency BEFORE rhythm changes ---
+    _MESES_EARLY = {
+        '01': 'janeiro', '02': 'fevereiro', '03': 'março', '04': 'abril',
+        '05': 'maio', '06': 'junho', '07': 'julho', '08': 'agosto',
+        '09': 'setembro', '10': 'outubro', '11': 'novembro', '12': 'dezembro',
+    }
+
+    def _date_full(m):
+        day = str(int(m.group(1)))
+        month = _MESES_EARLY.get(m.group(2), m.group(2))
+        year = m.group(3)
+        return f'{day} de {month} de {year}'
+
+    def _date_short(m):
+        day = str(int(m.group(1)))
+        month = _MESES_EARLY.get(m.group(2), m.group(2))
+        return f'{day} de {month}'
+
+    # DD/MM/AAAA (must come before DD/MM)
+    t = re.sub(r'(\d{1,2})/(\d{2})/(\d{4})', _date_full, t)
+    # DD/MM (without year)
+    t = re.sub(r'(\d{1,2})/(\d{2})(?!\d)', _date_short, t)
+
+    # HH:MM -> "quatorze e trinta" or "nove horas"
+    def _time_speech(m):
+        hour = int(m.group(1))
+        minute = int(m.group(2))
+        if minute == 0:
+            return f'{hour} horas'
+        return f'{hour} e {minute:02d}'
+
+    t = re.sub(r'(\d{1,2}):(\d{2})(?!:|\d)', _time_speech, t)
+
+    # R$ -> natural
+    def _currency_speech(m):
+        value = m.group(1).replace('.', '').replace(',', '.')
+        try:
+            num = float(value)
+            if num == int(num):
+                return f'{int(num)} reais'
+            return f'{num:.2f} reais'
+        except ValueError:
+            return m.group(0)
+
+    t = re.sub(r'R\$\s?([\d.,]+)', _currency_speech, t)
+
     # --- Add natural speech rhythm ---
     # Normalize ellipses to exactly 3 dots (TTS creates breathing pauses)
     t = re.sub(r'\.{2,}', '...', t)

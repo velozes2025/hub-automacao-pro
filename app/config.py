@@ -64,6 +64,11 @@ class Config:
     WEBHOOK_BACKUP_URL = os.getenv('WEBHOOK_BACKUP_URL', '')
     WEBHOOK_MAX_FAILURES = int(os.getenv('WEBHOOK_MAX_FAILURES', '3'))
 
+    # --- Admin Control (WhatsApp-based /commands) ---
+    ADMIN_NUMBER = os.getenv('ADMIN_NUMBER', '')
+    ADMIN_TAKEOVER_TTL = int(os.getenv('ADMIN_TAKEOVER_TTL', '14400'))  # 4 hours
+    ADMIN_ERROR_LOG_MAX = int(os.getenv('ADMIN_ERROR_LOG_MAX', '50'))
+
     # --- OLIVER.CORE v5.1 Engine ---
     ENGINE_V51_ENABLED = os.getenv('ENGINE_V51_ENABLED', 'true').lower() == 'true'
     ENGINE_V51_CACHE_ENABLED = os.getenv('ENGINE_V51_CACHE_ENABLED', 'true').lower() == 'true'

@@ -93,7 +93,7 @@ def process(conversation, agent_config, language='pt', api_key=None, source='tex
 
     # Get enabled tools
     import json
-    tools_enabled = agent_config.get('tools_enabled', '["web_search"]')
+    tools_enabled = agent_config.get('tools_enabled', '["web_search","schedule_meeting","airtable_read","airtable_create","airtable_update","google_calendar_list","google_calendar_check","send_email"]')
     if isinstance(tools_enabled, str):
         tools_enabled = json.loads(tools_enabled)
     tool_defs = get_tool_definitions(tools_enabled)

@@ -151,12 +151,37 @@ def _check_forbidden_patterns(response, conversation, facts):
     return issues
 
 
+def _check_incomplete_sentence(response, conversation, facts):
+    """Check if response ends with an incomplete sentence (cut off mid-thought)."""
+    issues = []
+    stripped = response.rstrip()
+    if not stripped:
+        return issues
+
+    # Detect sentences that look cut off: ending with comma, open connector, etc.
+    _INCOMPLETE_ENDINGS = re.compile(
+        r'(?:,|\.\.\.|para |pra |com |que |de |do |da |no |na |e |ou |mas |por |'
+        r'como |quando |se |em |ao |pela |pelo |num |numa |nos |nas |'
+        r'disponição para qualquer|disposição para qualquer|'
+        r'fico à disposição para)\s*$',
+        re.IGNORECASE,
+    )
+    if _INCOMPLETE_ENDINGS.search(stripped):
+        issues.append(Issue(
+            'incomplete_sentence',
+            f'Mensagem parece cortada/incompleta: termina com "{stripped[-40:]}"',
+            severity='error',
+        ))
+    return issues
+
+
 # All checks in order
 _CHECKS = [
     _check_repeated_question,
     _check_contradicts_facts,
     _check_too_long,
     _check_forbidden_patterns,
+    _check_incomplete_sentence,
 ]
 
 
