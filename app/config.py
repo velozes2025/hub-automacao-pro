@@ -82,13 +82,16 @@ class Config:
     ENGINE_V60_REFLECTION_ENABLED = os.getenv('ENGINE_V60_REFLECTION_ENABLED', 'true').lower() == 'true'
     ENGINE_V60_STATE_MACHINE_ENABLED = os.getenv('ENGINE_V60_STATE_MACHINE_ENABLED', 'true').lower() == 'true'
 
-    # --- Pricing ---
+    # --- Pricing (OpenAI models) ---
     PRICING = {
-        'claude-3-haiku-20240307': {'input': 0.00000025, 'output': 0.00000125},
-        'claude-3-5-haiku-20241022': {'input': 0.0000008, 'output': 0.000004},
-        'claude-3-5-sonnet-20241022': {'input': 0.000003, 'output': 0.000015},
-        'claude-sonnet-4-20250514': {'input': 0.000003, 'output': 0.000015},
-        'claude-opus-4-5-20251101': {'input': 0.000015, 'output': 0.000075},
+        'gpt-4o': {'input': 0.0000025, 'output': 0.00001},
+        'gpt-4o-mini': {'input': 0.00000015, 'output': 0.0000006},
+        # Legacy Anthropic keys kept for estimate_cost calls with old model names
+        'claude-3-haiku-20240307': {'input': 0.00000015, 'output': 0.0000006},
+        'claude-3-5-haiku-20241022': {'input': 0.00000015, 'output': 0.0000006},
+        'claude-3-5-sonnet-20241022': {'input': 0.0000025, 'output': 0.00001},
+        'claude-sonnet-4-20250514': {'input': 0.0000025, 'output': 0.00001},
+        'claude-opus-4-5-20251101': {'input': 0.0000025, 'output': 0.00001},
     }
 
 
