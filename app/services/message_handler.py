@@ -274,12 +274,10 @@ def _process_incoming(instance_name, data):
     )
     conversation_id = str(conversation['id'])
 
-    # --- Persist language (use stored if exists, update if first detection) ---
+    # --- Persist language (always follow the user's current language) ---
     stored_lang = conversation.get('language')
-    if stored_lang:
-        language = stored_lang
-    else:
-        language = detected_language
+    language = detected_language
+    if detected_language != stored_lang:
         try:
             conv_db.update_conversation(conversation_id, tenant_id=tenant_id, language=detected_language)
         except Exception:

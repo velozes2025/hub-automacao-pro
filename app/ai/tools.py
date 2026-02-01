@@ -549,18 +549,24 @@ def _exec_schedule_meeting(inputs, ctx):
             description=description,
         )
         if event:
-            calendar_link = f'\nGoogle Calendar: {event["link"]}'
+            calendar_link = event.get('link', '')
             log.info(f'[CALENDAR] Meeting synced: {event["id"]}')
     except Exception as e:
         log.warning(f'[CALENDAR] Sync failed (meeting saved locally): {e}')
+
+    link_instruction = ''
+    if calendar_link:
+        link_instruction = (
+            f'\n\nIMPORTANTE: Envie este link do Google Calendar para o cliente: {calendar_link}'
+        )
 
     return (
         f'REUNIAO AGENDADA COM SUCESSO!\n'
         f'Data: {date_str} ({actual_day_name})\n'
         f'Horario: {hour:02d}:{minute:02d}\n'
         f'Telefone: {phone}'
-        f'{calendar_link}\n'
-        f'Confirme ao cliente com esses dados exatos.'
+        f'{link_instruction}\n'
+        f'Confirme ao cliente com esses dados exatos e envie o link da reuniao.'
     )
 
 
