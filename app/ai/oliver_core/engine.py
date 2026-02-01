@@ -1,12 +1,12 @@
 """OLIVER.CORE v6.0 — Adaptive Multi-Tenant Engine.
 
 Decision engine that sits between message_handler and supervisor.
-Text-mode: intent detection -> cache -> compressed prompt -> supervisor.
-Audio-mode: passthrough to supervisor (v5.0 voice path unchanged).
+Text & audio: intent detection -> cache -> compressed prompt -> supervisor.
 
 v5.2: Returning client detection via message_count, enriched memory context.
 v5.3: Dynamic brand per tenant, multi-agent orchestration (TECH/FIN).
 v6.0: State machine + agent router + client memory + reflection loop.
+v6.1: Audio now uses full v5.1 pipeline (intent/cache/compression).
 """
 
 import json
@@ -64,8 +64,9 @@ def process_v51(conversation, agent_config, language='pt', api_key=None,
                 source='text', tenant_settings=None):
     """Main v5.1 engine entry point.
 
-    For text mode: intent detection -> cache check -> compressed prompt -> supervisor.
-    For audio mode: passthrough to supervisor (v5.0 voice spec handles it).
+    For text and audio: intent detection -> cache check -> compressed prompt -> supervisor.
+    Audio messages are transcribed upstream and processed identically to text,
+    with source='audio' passed through so the supervisor can set spoken_mode.
 
     Args:
         conversation: dict with messages, contact_name, contact_phone, stage, lead, etc.
@@ -83,13 +84,7 @@ def process_v51(conversation, agent_config, language='pt', api_key=None,
     if not config.ENGINE_V51_ENABLED:
         return supervisor.process(conversation, agent_config, language, api_key, source)
 
-    # --- Audio mode: passthrough to supervisor (v5.0 voice path) ---
-    if source == 'audio':
-        result = supervisor.process(conversation, agent_config, language, api_key, source)
-        result['engine_version'] = 'v5.0-voice'
-        return result
-
-    # --- TEXT MODE: v5.1 engine ---
+    # --- v5.1 engine (text + audio) ---
     tenant_id = conversation.get('tenant_id', '')
     tier_config = get_tier_config(tenant_settings)
     lead = conversation.get('lead')
@@ -197,11 +192,6 @@ def process_v60(conversation, agent_config, language='pt', api_key=None,
     """
     # --- v6.0 disabled? Passthrough to v5.1 ---
     if not config.ENGINE_V60_ENABLED:
-        return process_v51(conversation, agent_config, language, api_key,
-                          source, tenant_settings)
-
-    # --- Audio mode: v5.1 handles it (v6.0 is text-only for now) ---
-    if source == 'audio':
         return process_v51(conversation, agent_config, language, api_key,
                           source, tenant_settings)
 

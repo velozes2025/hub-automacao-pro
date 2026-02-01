@@ -71,18 +71,31 @@ _GLOBAL_CACHE = {
     ],
     ('OBJ.preco', 'en'): [
         "I understand. Expensive compared to what? What matters is the return it brings to your business.",
+        "That's a fair concern. How much do you think you lose per month by not solving this?",
     ],
     ('OBJ.tempo', 'en'): [
         "That's exactly why automation makes sense. When would be better for us to chat?",
+        "I get it. What if I showed you something simple that won't disrupt your routine?",
     ],
     ('OBJ.pensar', 'en'): [
         "Of course, makes total sense. Any specific question I can clarify to help with that decision?",
+        "Sure, no rush. Is there anything specific I can help clear up?",
+    ],
+    ('OBJ.socio', 'en'): [
+        "Great! Want me to prepare a summary for you to take to that conversation?",
+        "Makes sense. Want me to join a call with both of you?",
+    ],
+    ('OBJ.tentou', 'en'): [
+        "That's frustrating. What happened?",
+        "I see. Tell me what went wrong so I can understand the situation.",
     ],
     ('OBJ.depois', 'en'): [
         "No pressure at all. Want me to send you some material to look at when you have a moment?",
+        "No problem. Want me to send something for you to check out when you have time?",
     ],
     ('FECH', 'en'): [
         "Great! What would be the ideal next step for you?",
+        "Awesome! Does it make sense to schedule a quick call to align the details?",
     ],
 
     # --- SPANISH ---
@@ -94,12 +107,31 @@ _GLOBAL_CACHE = {
     ],
     ('OBJ.preco', 'es'): [
         'Entiendo. Caro comparado a que? Lo que importa es el retorno para tu negocio.',
+        'Es una preocupacion valida. Cuanto crees que pierdes al mes sin resolver esto?',
+    ],
+    ('OBJ.tempo', 'es'): [
+        'Justamente por eso tiene sentido automatizar. Cuando seria mejor para conversar?',
+        'Entiendo. Y si te muestro algo simple que no interrumpa tu rutina?',
+    ],
+    ('OBJ.pensar', 'es'): [
+        'Claro, tiene todo el sentido. Hay alguna duda especifica que pueda aclarar?',
+        'Claro, sin prisa. Hay algo especifico en que pueda ayudar?',
+    ],
+    ('OBJ.socio', 'es'): [
+        'Genial! Quieres que prepare un resumen para llevar a esa conversacion?',
+        'Tiene sentido. Quieres que participe en una llamada con ustedes dos?',
+    ],
+    ('OBJ.tentou', 'es'): [
+        'Eso es frustrante. Que paso?',
+        'Entiendo. Cuentame que salio mal para entender el panorama.',
     ],
     ('OBJ.depois', 'es'): [
         'Tranquilo, sin presion. Quieres que te mande material para verlo con calma?',
+        'Sin problema. Quieres que te envie algo para revisar cuando tengas un momento?',
     ],
     ('FECH', 'es'): [
         'Genial! Cual seria el proximo paso ideal para ti?',
+        'Excelente! Tiene sentido agendar una llamada rapida para alinear los detalles?',
     ],
 }
 
@@ -132,11 +164,9 @@ def try_cache(phase, intent_type, lead, language='pt', tenant_brand=None):
 
     entry = _GLOBAL_CACHE.get((key, language))
     if entry is None:
-        # Try Portuguese fallback for unsupported languages
-        if language != 'pt':
-            entry = _GLOBAL_CACHE.get((key, 'pt'))
-        if entry is None:
-            return None
+        # No fallback to other languages — cache miss goes to LLM
+        # which will respond in the correct language via system prompt
+        return None
 
     # Pick response (random if list for variation)
     if isinstance(entry, list):
