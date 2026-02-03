@@ -1,4 +1,8 @@
 const axios = require('axios');
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 const config = require('../config');
 const logger = require('../utils/logger');
 const consumptionLogger = require('../services/consumption-logger');
@@ -32,11 +36,11 @@ class ElevenLabsClient {
         `${this.baseUrl}/text-to-speech/${voiceId || this.voiceId}`,
         {
           text,
-          model_id: 'eleven_multilingual_v2',
+          model_id: 'eleven_flash_v2_5',
           voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.6,
-            style: 0.3,
+            stability: 1.0,
+            similarity_boost: 0.2,
+            style: 0.0,
             use_speaker_boost: false,
           },
         },
@@ -52,7 +56,11 @@ class ElevenLabsClient {
       );
 
       logger.debug('Audio generated successfully');
-      return Buffer.from(response.data);
+
+      // Process audio to reduce echo/reverb
+      const rawAudio = Buffer.from(response.data);
+      const processedAudio = await this.processAudio(rawAudio);
+      return processedAudio;
 
     } catch (error) {
       // Handle arraybuffer error response
@@ -120,6 +128,45 @@ class ElevenLabsClient {
     } catch (fallbackError) {
       logger.error('[TTS] OpenAI fallback failed:', fallbackError.message);
       throw new Error('Both ElevenLabs and OpenAI TTS failed');
+    }
+  }
+
+  /**
+   * Process audio with ffmpeg to reduce echo/reverb
+   */
+  async processAudio(audioBuffer) {
+    try {
+      const tmpDir = os.tmpdir();
+      const inputFile = path.join(tmpDir, `tts_in_${Date.now()}.mp3`);
+      const outputFile = path.join(tmpDir, `tts_out_${Date.now()}.mp3`);
+
+      // Write input audio
+      fs.writeFileSync(inputFile, audioBuffer);
+
+      // Apply audio filters to reduce echo:
+      // - highpass: remove low frequency rumble
+      // - lowpass: remove high frequency hiss
+      // - afftdn: noise reduction
+      // - acompressor: even out volume
+      const ffmpegCmd = `ffmpeg -i "${inputFile}" -af "highpass=f=80,lowpass=f=12000,afftdn=nf=-20,acompressor=threshold=-20dB:ratio=4:attack=5:release=50" -y "${outputFile}" 2>/dev/null`;
+
+      execSync(ffmpegCmd, { timeout: 30000 });
+
+      // Read processed audio
+      const processedBuffer = fs.readFileSync(outputFile);
+
+      // Cleanup temp files
+      try {
+        fs.unlinkSync(inputFile);
+        fs.unlinkSync(outputFile);
+      } catch (e) {}
+
+      logger.debug('[TTS] Audio processed with echo reduction');
+      return processedBuffer;
+
+    } catch (error) {
+      logger.warn('[TTS] Audio processing failed, using original:', error.message);
+      return audioBuffer;
     }
   }
 

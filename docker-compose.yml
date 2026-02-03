@@ -207,6 +207,9 @@ services:
       - PORT=3100
       - SQLITE_PATH=/app/data/agent.db
       - TIMEZONE=${TIMEZONE:-America/Sao_Paulo}
+      # Database for cost logging
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-hub_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hub_database}
+      - DEFAULT_TENANT_ID=${DEFAULT_TENANT_ID:-3aeafcbc-745b-49e3-b3b5-1d9e2c900a18}
       # AI APIs
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - DEFAULT_MODEL=${DEFAULT_MODEL:-claude-sonnet-4-20250514}

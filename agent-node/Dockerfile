@@ -1,12 +1,13 @@
 FROM node:20-slim
 
-# Install build dependencies for native modules
+# Install build dependencies for native modules + ffmpeg for audio processing
 RUN apt-get update && apt-get install -y \
     python3 \
     make \
     g++ \
     sqlite3 \
     wget \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install PM2 globally
