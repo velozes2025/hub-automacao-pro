@@ -196,6 +196,11 @@ async function handleAudioMessage({ whatsappId, instance, remoteJid, pushName, a
     const duration = Date.now() - startTime;
     logger.info(`[OK] Audio message processed in ${duration}ms`);
 
+    // Background tasks (non-blocking) - CRITICAL: sync to Airtable
+    processBackgroundTasks(memory.id, whatsappId, history, facts, messageText, response, pushName).catch(err => {
+      logger.error('[BG] Background task error:', err.message);
+    });
+
     return { success: true, transcription, response, duration };
 
   } catch (error) {
@@ -224,23 +229,42 @@ async function processBackgroundTasks(memoryId, whatsappId, history, currentFact
       newFacts.nome = pushName;
     }
 
+    // Update local facts if any new
     if (Object.keys(newFacts).length > 0) {
       memoryManager.updateFacts(memoryId, newFacts);
       logger.info(`[BG] Facts updated: ${JSON.stringify(newFacts)}`);
+    }
 
-      // Sync to Airtable if configured
-      if (airtable.isConfigured()) {
-        try {
-          await airtable.upsertLead(whatsappId, {
-            Nome: newFacts.nome || pushName,
-            Empresa: newFacts.empresa,
-            Interesse: newFacts.interesse,
-            Ultimo_Contato: new Date().toISOString(),
-          });
-          logger.info(`[BG] Airtable synced for ${whatsappId}`);
-        } catch (e) {
-          logger.error(`[BG] Airtable sync failed: ${e.message}`);
+    // ALWAYS sync to Airtable (update last contact + any new facts)
+    if (airtable.isConfigured()) {
+      try {
+        // Detect message type
+        const isAudio = userMessage.includes('[Áudio') || userMessage.includes('[Audio');
+        const isForwarded = userMessage.includes('[encaminhad') || userMessage.includes('[Mensagem encaminhada');
+
+        // Build notes with context
+        let notas = '';
+        if (isAudio && isForwarded) {
+          notas = `Último: Áudio encaminhado`;
+        } else if (isAudio) {
+          notas = `Último: Áudio direto`;
+        } else if (isForwarded) {
+          notas = `Último: Texto encaminhado`;
+        } else {
+          notas = `Último: Texto direto`;
         }
+
+        const allFacts = { ...currentFacts, ...newFacts };
+        await airtable.upsertLead(whatsappId, {
+          Nome: allFacts.nome || pushName || 'Sem nome',
+          Empresa: allFacts.empresa,
+          Interesse: allFacts.interesse,
+          Ultima_Interacao: new Date().toISOString(),
+          Notas: notas,
+        });
+        logger.info(`[BG] Airtable synced for ${whatsappId} (${notas})`);
+      } catch (e) {
+        logger.error(`[BG] Airtable sync failed: ${e.message}`);
       }
     }
 
