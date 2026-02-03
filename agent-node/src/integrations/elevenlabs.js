@@ -36,13 +36,14 @@ class ElevenLabsClient {
         `${this.baseUrl}/text-to-speech/${voiceId || this.voiceId}`,
         {
           text,
-          model_id: 'eleven_flash_v2_5',
+          model_id: 'eleven_multilingual_v2',
           voice_settings: {
-            stability: 1.0,
-            similarity_boost: 0.2,
-            style: 0.0,
-            use_speaker_boost: false,
+            stability: 0.30,
+            similarity_boost: 0.60,
+            style: 0.40,
+            use_speaker_boost: true,
           },
+          output_format: 'mp3_44100_192',
         },
         {
           headers: this.getHeaders(),
@@ -143,12 +144,11 @@ class ElevenLabsClient {
       // Write input audio
       fs.writeFileSync(inputFile, audioBuffer);
 
-      // Apply audio filters to reduce echo:
-      // - highpass: remove low frequency rumble
-      // - lowpass: remove high frequency hiss
-      // - afftdn: noise reduction
-      // - acompressor: even out volume
-      const ffmpegCmd = `ffmpeg -i "${inputFile}" -af "highpass=f=80,lowpass=f=12000,afftdn=nf=-20,acompressor=threshold=-20dB:ratio=4:attack=5:release=50" -y "${outputFile}" 2>/dev/null`;
+      // Natural voice processing - preserve bass for masculine tone:
+      // - lowpass=f=14000: preserve natural highs
+      // - equalizer: boost low-mids for fuller/deeper voice
+      // - afftdn=nf=-30: minimal noise reduction
+      const ffmpegCmd = `ffmpeg -i "${inputFile}" -af "lowpass=f=14000,equalizer=f=180:t=q:w=1:g=3,equalizer=f=2500:t=q:w=1:g=-1,afftdn=nf=-30" -y "${outputFile}" 2>/dev/null`;
 
       execSync(ffmpegCmd, { timeout: 30000 });
 
