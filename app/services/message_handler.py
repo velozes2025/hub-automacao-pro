@@ -69,6 +69,31 @@ def _extract_content(data, instance_name):
     return None, 'unsupported'
 
 
+def _is_forwarded(data):
+    """Detect if a message is forwarded from WhatsApp contextInfo.
+
+    Evolution API v2 forwards contextInfo inside each message type.
+    Returns True if isForwarded is set or forwardingScore >= 1.
+    """
+    msg = data.get('message', {})
+
+    # Check all possible message types for contextInfo
+    for key in ('extendedTextMessage', 'conversation', 'audioMessage',
+                'imageMessage', 'videoMessage', 'documentMessage'):
+        sub = msg.get(key)
+        if isinstance(sub, dict):
+            ctx = sub.get('contextInfo', {})
+            if ctx.get('isForwarded') or (ctx.get('forwardingScore', 0) >= 1):
+                return True
+
+    # Top-level contextInfo (some Evolution API versions)
+    ctx_top = msg.get('contextInfo', {})
+    if ctx_top.get('isForwarded') or (ctx_top.get('forwardingScore', 0) >= 1):
+        return True
+
+    return False
+
+
 def _is_within_business_hours(account_config):
     """Check if current time is within business hours."""
     from datetime import datetime, timezone
@@ -102,9 +127,13 @@ def handle_webhook(payload):
 
         # Skip outgoing messages (but learn LID mappings from them)
         if data.get('key', {}).get('fromMe', False):
-            # Check for admin commands BEFORE skipping
+            # Check for admin slash commands FIRST (retrocompatible)
             if admin_control.is_admin_command(data, instance_name):
                 _handle_admin_command(instance_name, data)
+                return
+            # Check for natural language admin messages (no '/' prefix)
+            if admin_control.is_admin_message(data, instance_name):
+                _handle_admin_natural(instance_name, data)
                 return
             _handle_sent_message(instance_name, data)
             return
@@ -175,6 +204,42 @@ def _handle_admin_command(instance_name, data):
                 whatsapp.send_message(instance_name, reply_phone, response)
     except Exception as e:
         log.error(f'[ADMIN] Error: {e}', exc_info=True)
+
+
+def _handle_admin_natural(instance_name, data):
+    """Process a natural-language admin message via NLP interpreter.
+
+    Response always goes back to admin's own number (self-chat).
+    """
+    try:
+        from app.db.redis_client import get_redis
+        r = get_redis()
+        if not r:
+            log.warning('[ADMIN NLP] Redis unavailable')
+            return
+
+        account = tenants_db.get_whatsapp_account_by_instance(instance_name)
+        if not account:
+            return
+
+        msg = data.get('message', {})
+        text = (msg.get('conversation')
+                or msg.get('extendedTextMessage', {}).get('text', ''))
+        if not text:
+            return
+
+        log.info(f'[ADMIN NLP] Natural message: {text[:80]}')
+
+        controller = admin_control.AdminController(instance_name, account, r)
+        response = controller.handle_natural_message(text)
+
+        if response:
+            # Always reply to admin's own number (self-chat)
+            admin_phone = config.ADMIN_NUMBER
+            if admin_phone:
+                whatsapp.send_message(instance_name, admin_phone, response)
+    except Exception as e:
+        log.error(f'[ADMIN NLP] Error: {e}', exc_info=True)
 
 
 def _process_incoming(instance_name, data):
@@ -274,17 +339,27 @@ def _process_incoming(instance_name, data):
     )
     conversation_id = str(conversation['id'])
 
-    # --- Persist language (always follow the user's current language) ---
+    # --- Persist language (lock on first message — never change after) ---
     stored_lang = conversation.get('language')
-    language = detected_language
-    if detected_language != stored_lang:
+    if stored_lang:
+        # Language already set: use it (never override, even if client sends
+        # a message in another language — prevents accidental language flips)
+        language = stored_lang
+    else:
+        # First message: detect and lock
+        language = detected_language
         try:
             conv_db.update_conversation(conversation_id, tenant_id=tenant_id, language=detected_language)
         except Exception:
             pass
 
+    # --- Detect forwarded messages ---
+    forwarded = _is_forwarded(data)
+    if forwarded:
+        log.info(f'[{instance_name}] Forwarded message detected from {db_phone}')
+
     # --- Save user message ---
-    msg_metadata = {'push_name': push_name, 'source': source}
+    msg_metadata = {'push_name': push_name, 'source': source, 'forwarded': forwarded}
     if source == 'audio':
         audio_meta = transcriber.get_audio_metadata(data)
         msg_metadata.update(audio_meta)
@@ -379,6 +454,10 @@ def _process_incoming(instance_name, data):
     # Detect if this is a brand new lead (first interaction)
     is_new_lead = (not lead or lead.get('stage') == 'new') and len(history) <= 2
     conversation_ctx['is_new_lead'] = is_new_lead
+
+    # Pass forwarded flag so AI knows not to respond as if message was directed at it
+    if forwarded:
+        conversation_ctx['is_forwarded'] = True
 
     # Per-tenant API key
     api_key = account.get('tenant_anthropic_key')

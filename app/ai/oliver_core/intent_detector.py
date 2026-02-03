@@ -90,7 +90,7 @@ _STAGE_MAP = {
 
 
 def detect_intent(message_text, conversation_stage='new', lead=None,
-                  message_count=0):
+                  message_count=0, contact_name=None):
     """Detect intent from user message.
 
     Args:
@@ -98,6 +98,7 @@ def detect_intent(message_text, conversation_stage='new', lead=None,
         conversation_stage: current stage from DB ('new', 'qualifying', etc.)
         lead: lead dict or None
         message_count: total messages in conversation (for returning client detection)
+        contact_name: conversation contact_name (fallback for lead name)
 
     Returns:
         tuple: (phase, intent_type)
@@ -105,7 +106,7 @@ def detect_intent(message_text, conversation_stage='new', lead=None,
             - intent_type: specific type like 'OBJ.preco' or None for generic phases
     """
     if not message_text:
-        return _resolve_opening(lead, conversation_stage, message_count)
+        return _resolve_opening(lead, conversation_stage, message_count, contact_name)
 
     msg = message_text.strip()
 
@@ -121,18 +122,21 @@ def detect_intent(message_text, conversation_stage='new', lead=None,
 
     # Opening logic: first contact or returning client
     if conversation_stage == 'new' or phase == 'ABER':
-        return _resolve_opening(lead, conversation_stage, message_count)
+        return _resolve_opening(lead, conversation_stage, message_count, contact_name)
 
     log.debug(f'Intent fallback: {phase} (stage={conversation_stage})')
     return phase, None
 
 
-def _resolve_opening(lead, stage, message_count=0):
+def _resolve_opening(lead, stage, message_count=0, contact_name=None):
     """Determine opening type: new without name, new with name, or returning client."""
-    has_name = lead and lead.get('name')
+    has_name = (lead and lead.get('name')) or contact_name
 
-    # Returning client: has a name AND has prior conversation history
-    # (message_count > 0 means there were previous messages in DB)
+    # Returning client: has prior conversation history (message_count > 2
+    # means there were previous exchanges — never re-ask name)
+    if message_count > 2:
+        return 'ABER', 'ABER.retorno'
+
     if has_name and message_count > 0:
         return 'ABER', 'ABER.retorno'
 

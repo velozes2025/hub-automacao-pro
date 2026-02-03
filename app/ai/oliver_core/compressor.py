@@ -84,11 +84,27 @@ def _get_local_time(phone, language='pt'):
     )
 
 
-# --- Language labels (compact) ---
+# --- Language labels (strict enforcement) ---
 _LANG_LABELS = {
-    'pt': 'IDIOMA:portugues brasileiro. PROIBIDO qualquer palavra em ingles ou outro idioma. 100% portugues.',
-    'en': 'IDIOMA:English only. ZERO words in Portuguese or any other language. 100% English.',
-    'es': 'IDIOMA:espanol solamente. PROHIBIDO palabras en otro idioma. 100% espanol.',
+    'pt': (
+        'IDIOMA OBRIGATORIO: portugues brasileiro. '
+        'PROIBIDO responder em ingles, espanhol ou qualquer outro idioma, '
+        'MESMO QUE o cliente escreva em ingles. '
+        'Palavras como "ok", "feedback", "marketing" sao permitidas (emprestimos comuns). '
+        'Frases inteiras em outro idioma sao PROIBIDAS. Responda SEMPRE 100% em portugues.'
+    ),
+    'en': (
+        'MANDATORY LANGUAGE: English. '
+        'FORBIDDEN to reply in Portuguese, Spanish, or any other language, '
+        'EVEN IF the client writes in another language. '
+        'Always reply 100% in English. Zero sentences in other languages.'
+    ),
+    'es': (
+        'IDIOMA OBLIGATORIO: espanol. '
+        'PROHIBIDO responder en portugues, ingles o cualquier otro idioma, '
+        'AUNQUE el cliente escriba en otro idioma. '
+        'Responda SIEMPRE 100% en espanol. Cero frases en otros idiomas.'
+    ),
 }
 
 
@@ -176,6 +192,15 @@ def build_compressed_prompt(phase, intent_type, agent_config, conversation,
     # Creator rule (compact)
     parts.append('CRIADOR:Thiago. Se perguntarem quem te criou, responda THIAGO.')
     parts.append('REGRA:Sempre pergunte o nome do lead se nao souber. Nunca repita conteudo ja dito.')
+
+    # Forwarded message indicator
+    if conversation.get('is_forwarded'):
+        parts.append(
+            'MSG_ENCAMINHADA:A ultima mensagem do usuario foi ENCAMINHADA de outra conversa. '
+            'NAO responda como se a mensagem fosse dirigida a voce. '
+            'Analise o contexto: o usuario esta compartilhando algo de outra pessoa para voce ver. '
+            'Comente de forma inteligente sobre o conteudo, sem se colocar como destinatario original.'
+        )
 
     # Reflection correction (v6.0 — appended if retry)
     reflection_correction = conversation.get('reflection_correction', '')

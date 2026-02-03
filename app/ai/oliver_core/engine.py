@@ -106,7 +106,8 @@ def process_v51(conversation, agent_config, language='pt', api_key=None,
     sentiment = detect_sentiment(last_user_msg) if last_user_msg else 'neutral'
 
     # Detect intent (v5.2: message_count enables returning client detection)
-    phase, intent_type = detect_intent(last_user_msg, stage, lead, message_count)
+    contact_name = conversation.get('contact_name', '')
+    phase, intent_type = detect_intent(last_user_msg, stage, lead, message_count, contact_name)
     log.info(f'[V5.2] phase={phase} intent={intent_type} sentiment={sentiment}')
 
     # --- Try cache (0 tokens) ---
@@ -211,7 +212,8 @@ def process_v60(conversation, agent_config, language='pt', api_key=None,
     message_count = len(messages)
 
     # Detect intent (shared with v5.1)
-    phase, intent_type = detect_intent(last_user_msg, stage, lead, message_count)
+    contact_name = conversation.get('contact_name', '')
+    phase, intent_type = detect_intent(last_user_msg, stage, lead, message_count, contact_name)
 
     # --- 1. State Machine: resolve node ---
     state = None

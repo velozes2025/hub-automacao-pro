@@ -8,6 +8,7 @@ Checks:
     2. contradicts_facts — response contradicts known client facts
     3. too_long — response exceeds 500 chars (WhatsApp text mode)
     4. forbidden_patterns — markdown, lists, numbered items
+    5. language_mix — foreign language sentences in response
 """
 
 import re
@@ -71,6 +72,42 @@ _FORBIDDEN = [
 ]
 
 MAX_RESPONSE_LENGTH = 500
+
+# --- Language mix detection ---
+# Common English words that indicate a sentence is in English (not loanwords)
+_ENGLISH_MARKERS = re.compile(
+    r'\b(the|is|are|was|were|have|has|been|would|could|should|'
+    r'this|that|these|those|with|from|your|you|they|them|their|'
+    r'what|which|where|when|how|does|did|will|shall|'
+    r'can|cannot|don\'t|doesn\'t|didn\'t|wouldn\'t|'
+    r'I\'m|I\'ll|we\'re|we\'ll|you\'re|you\'ll|'
+    r'let me|please|thank you|sorry|hello|goodbye|'
+    r'our|here|there|about|also|just|very|really|'
+    r'because|therefore|however|although|while)\b', re.IGNORECASE)
+
+# Common Portuguese words that indicate a sentence is in Portuguese
+_PORTUGUESE_MARKERS = re.compile(
+    r'\b(voce|voces|nosso|nossa|nossos|nossas|'
+    r'nao|sim|tambem|aqui|ali|agora|depois|antes|'
+    r'muito|pouco|mais|menos|melhor|pior|'
+    r'esta|estou|estamos|temos|tenho|'
+    r'pode|posso|podemos|vamos|quero|'
+    r'porque|entao|assim|ainda|sempre|nunca|'
+    r'obrigado|obrigada|desculpe|ola|bom dia|boa tarde|boa noite|'
+    r'por favor|como|qual|quem|onde|quando)\b', re.IGNORECASE)
+
+# Common loanwords accepted in Portuguese (not counted as foreign)
+_LOANWORDS = {
+    'ok', 'okay', 'feedback', 'marketing', 'email', 'online', 'offline',
+    'software', 'hardware', 'app', 'site', 'blog', 'link', 'chat',
+    'startup', 'design', 'layout', 'input', 'output', 'dashboard',
+    'lead', 'leads', 'crm', 'api', 'webhook', 'deploy', 'cloud',
+    'streaming', 'download', 'upload', 'status', 'check', 'ticket',
+    'performance', 'coaching', 'mentoring', 'briefing', 'insight',
+    'deadline', 'meeting', 'follow', 'up', 'followup', 'follow-up',
+    'roi', 'kpi', 'b2b', 'b2c', 'saas', 'bot', 'fit', 'pitch',
+    'sprint', 'backlog', 'roadmap', 'mindset', 'networking',
+}
 
 
 # --- Validation functions ---
@@ -151,6 +188,68 @@ def _check_forbidden_patterns(response, conversation, facts):
     return issues
 
 
+def _check_language_mix(response, conversation, facts):
+    """Check if response contains sentences in the wrong language.
+
+    Uses marker-word counting per sentence. If a sentence has 3+ English marker
+    words and the conversation language is Portuguese (or vice-versa), flag as error.
+    Loanwords (ok, feedback, marketing, etc.) are excluded from counting.
+    """
+    issues = []
+    expected_lang = conversation.get('language', 'pt')
+
+    # Split response into sentences (period, exclamation, question, newline)
+    sentences = re.split(r'[.!?\n]+', response)
+
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if len(sentence) < 15:  # Skip very short fragments
+            continue
+
+        words = set(re.findall(r'[a-zA-ZÀ-ÿ\']+', sentence.lower()))
+        # Remove loanwords from consideration
+        words_clean = words - _LOANWORDS
+
+        if expected_lang == 'pt':
+            # Response should be in Portuguese — check for English sentences
+            en_hits = len(_ENGLISH_MARKERS.findall(sentence))
+            if en_hits >= 3:
+                issues.append(Issue(
+                    'language_mix',
+                    f'Frase em ingles detectada na resposta (idioma esperado: portugues): '
+                    f'"{sentence[:60]}..."',
+                    severity='error',
+                ))
+                break  # One violation is enough
+
+        elif expected_lang == 'en':
+            # Response should be in English — check for Portuguese sentences
+            pt_hits = len(_PORTUGUESE_MARKERS.findall(sentence))
+            if pt_hits >= 3:
+                issues.append(Issue(
+                    'language_mix',
+                    f'Portuguese sentence detected in response (expected: English): '
+                    f'"{sentence[:60]}..."',
+                    severity='error',
+                ))
+                break
+
+        elif expected_lang == 'es':
+            # Spanish: flag English or Portuguese intrusions
+            en_hits = len(_ENGLISH_MARKERS.findall(sentence))
+            pt_hits = len(_PORTUGUESE_MARKERS.findall(sentence))
+            if en_hits >= 3 or pt_hits >= 3:
+                issues.append(Issue(
+                    'language_mix',
+                    f'Frase en idioma incorrecto detectada (esperado: espanol): '
+                    f'"{sentence[:60]}..."',
+                    severity='error',
+                ))
+                break
+
+    return issues
+
+
 def _check_incomplete_sentence(response, conversation, facts):
     """Check if response ends with an incomplete sentence (cut off mid-thought)."""
     issues = []
@@ -181,6 +280,7 @@ _CHECKS = [
     _check_contradicts_facts,
     _check_too_long,
     _check_forbidden_patterns,
+    _check_language_mix,
     _check_incomplete_sentence,
 ]
 
@@ -221,6 +321,12 @@ def build_correction_guidance(issues, facts=None):
     lines = ['[CORRECAO] Sua resposta anterior tinha problemas:']
     for issue in issues:
         lines.append(f'- {issue.type}: {issue.detail}')
+
+    # If language mix detected, add explicit language instruction
+    has_lang_issue = any(i.type == 'language_mix' for i in issues)
+    if has_lang_issue:
+        lines.append('IMPORTANTE: Reescreva a resposta INTEIRA no idioma correto da conversa.')
+        lines.append('NAO traduza palavra por palavra — reescreva naturalmente.')
 
     lines.append('Reescreva corrigindo esses pontos.')
     lines.append('Mantenha o mesmo tom e intencao, apenas corrija os problemas.')

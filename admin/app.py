@@ -509,7 +509,8 @@ def api_qr(token):
 
 # --- Startup ---
 
-if __name__ == '__main__':
+def _init_app():
+    """Initialize DB pools and default admin. Called on import (for gunicorn) and __main__."""
     admin_db.init_pool(
         host=os.getenv('DB_HOST', 'postgres'),
         port=int(os.getenv('DB_PORT', '5432')),
@@ -519,5 +520,13 @@ if __name__ == '__main__':
         database_url=os.getenv('DATABASE_URL', ''),
     )
     ensure_default_admin()
-    log.info('Admin Panel started on port 9615')
-    app.run(host='0.0.0.0', port=9615)
+
+
+# Initialize on module load (gunicorn imports admin.app:app)
+_init_app()
+
+
+if __name__ == '__main__':
+    port = int(os.getenv('PORT', '9615'))
+    log.info(f'Admin Panel started on port {port}')
+    app.run(host='0.0.0.0', port=port)
