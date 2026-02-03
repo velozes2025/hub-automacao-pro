@@ -89,12 +89,14 @@ td.number, th.number { text-align: right; font-variant-numeric: tabular-nums; }
 .dot-red { background: #e74c3c; }
 .dot-yellow { background: #f1c40f; }
 .dot-blue { background: #3498db; }
+.dot-orange { background: #e67e22; }
 
 /* ===== Badges ===== */
 .badge { display: inline-block; padding: 3px 8px; border-radius: 10px; font-size: 0.72em; font-weight: 600; white-space: nowrap; }
 .badge-chat { background: #1a3a5c; color: #5dade2; }
 .badge-tts { background: #1a3a2a; color: #25d366; }
 .badge-transcription { background: #3a3a1a; color: #f1c40f; }
+.badge-search { background: #3a2a1a; color: #e67e22; }
 
 /* ===== Buttons ===== */
 .btn {
@@ -163,6 +165,7 @@ td.number, th.number { text-align: right; font-variant-numeric: tabular-nums; }
 .chart-bar-fill.chat { background: #5dade2; }
 .chart-bar-fill.tts { background: #25d366; }
 .chart-bar-fill.transcription { background: #f1c40f; }
+.chart-bar-fill.search { background: #e67e22; }
 .chart-bar-value { width: 64px; font-size: 0.75em; color: #aaa; font-variant-numeric: tabular-nums; text-align: right; }
 .chart-legend { margin-top: 10px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; font-size: 0.8em; color: #888; }
 

@@ -55,6 +55,8 @@
                     <span class="badge badge-tts">Voz (TTS)</span>
                     {% elif row.operation == 'transcription' %}
                     <span class="badge badge-transcription">Transcricao</span>
+                    {% elif row.operation == 'web_search' %}
+                    <span class="badge badge-search">Pesquisa Web</span>
                     {% else %}
                     <span class="badge">{{ row.operation }}</span>
                     {% endif %}
@@ -101,15 +103,19 @@
                 {% if day.get('transcription', 0) > 0 %}
                 <div class="chart-bar-fill transcription" style="width:{{ (day.get('transcription', 0) / max_cost.val * 100)|round(1) }}%;" title="STT: ${{ '%.4f' % day.get('transcription', 0) }}"></div>
                 {% endif %}
+                {% if day.get('web_search', 0) > 0 %}
+                <div class="chart-bar-fill search" style="width:{{ (day.get('web_search', 0) / max_cost.val * 100)|round(1) }}%;" title="Pesquisa: ${{ '%.4f' % day.get('web_search', 0) }}"></div>
+                {% endif %}
             </div>
             <div class="chart-bar-value">${{ '%.4f' % day.total }}</div>
         </div>
         {% endfor %}
     </div>
-    <div style="margin-top:12px;display:flex;gap:16px;justify-content:center;">
+    <div style="margin-top:12px;display:flex;gap:16px;justify-content:center;flex-wrap:wrap;">
         <span><span class="dot dot-blue"></span> IA Chat</span>
         <span><span class="dot dot-green"></span> Voz (TTS)</span>
         <span><span class="dot dot-yellow"></span> Transcricao</span>
+        <span><span class="dot dot-orange"></span> Pesquisa Web</span>
     </div>
     {% else %}
     <p style="color:#666;text-align:center;">Sem dados ainda</p>
@@ -312,7 +318,7 @@
 {% endif %}
 
 <div style="text-align:center;color:#555;font-size:0.8em;margin-top:24px;">
-    Dados atualizados em tempo real a cada carregamento de pagina.
-    Custos: Claude (Anthropic) | ElevenLabs TTS (Primario) | OpenAI gpt-4o-mini-tts (Fallback) | Whisper STT (OpenAI)
+    Dados atualizados em tempo real a cada carregamento de pagina.<br>
+    Custos: OpenAI GPT-4o | ElevenLabs TTS (Primario) | OpenAI TTS (Fallback) | Whisper STT | Tavily Web Search
 </div>
 {% endblock %}

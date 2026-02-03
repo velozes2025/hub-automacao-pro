@@ -189,6 +189,59 @@ services:
         condition: service_started
 
   # ============================================
+  # Agent Node - Node.js with Persistent Memory
+  # ============================================
+  hub-agent-node:
+    build:
+      context: ./agent-node
+      dockerfile: Dockerfile
+    container_name: hub-agent-node
+    restart: unless-stopped
+    expose:
+      - "3100"
+    volumes:
+      - ./agent-node/data:/app/data
+      - ./agent-node/logs:/app/logs
+    environment:
+      - NODE_ENV=production
+      - PORT=3100
+      - SQLITE_PATH=/app/data/agent.db
+      - TIMEZONE=${TIMEZONE:-America/Sao_Paulo}
+      # AI APIs
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-claude-sonnet-4-20250514}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # Evolution API
+      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY}
+      - EVOLUTION_URL=http://evolution:8080
+      # Google APIs
+      - GOOGLE_CALENDAR_ID=${GOOGLE_CALENDAR_ID:-primary}
+      - GOOGLE_SERVICE_ACCOUNT_JSON=${GOOGLE_SERVICE_ACCOUNT_JSON:-}
+      # Airtable
+      - AIRTABLE_API_KEY=${AIRTABLE_API_KEY:-}
+      - AIRTABLE_BASE_ID=${AIRTABLE_BASE_ID:-}
+      # Gmail
+      - GMAIL_USER=${GMAIL_ADDRESS:-}
+      - GMAIL_APP_PASSWORD=${GMAIL_APP_PASSWORD:-}
+      - GMAIL_DISPLAY_NAME=${GMAIL_DISPLAY_NAME:-Hub Automacao}
+      # ElevenLabs
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - ELEVENLABS_VOICE_ID=${ELEVENLABS_VOICE_ID:-ASZKXTy56hqkRmqOqckz}
+      # Web Search
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      # Admin
+      - ADMIN_NUMBER=${ADMIN_NUMBER:-}
+    networks:
+      - hub-network
+    depends_on:
+      - evolution
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================
   # Nginx - Reverse Proxy
   # ============================================
   nginx:
@@ -206,6 +259,7 @@ services:
     depends_on:
       - hub-bot
       - admin-panel
+      - hub-agent-node
 
 # ============================================
 # Volumes Persistentes
