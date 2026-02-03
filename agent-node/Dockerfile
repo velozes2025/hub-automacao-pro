@@ -1,7 +1,13 @@
-FROM node:20-alpine
+FROM node:20-slim
 
 # Install build dependencies for native modules
-RUN apk add --no-cache python3 make g++ sqlite
+RUN apt-get update && apt-get install -y \
+    python3 \
+    make \
+    g++ \
+    sqlite3 \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install PM2 globally
 RUN npm install -g pm2
@@ -11,7 +17,7 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies (use install instead of ci since no lock file)
+# Install dependencies
 RUN npm install --omit=dev
 
 # Copy source code

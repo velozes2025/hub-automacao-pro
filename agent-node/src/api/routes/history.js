@@ -72,7 +72,9 @@ router.get('/:userId', (req, res) => {
 
   } catch (error) {
     logger.error('Error fetching history:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
   }
 });
 
@@ -129,7 +131,9 @@ router.get('/', (req, res) => {
 
   } catch (error) {
     logger.error('Error listing history:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
   }
 });
 

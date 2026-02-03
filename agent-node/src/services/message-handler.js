@@ -1,5 +1,6 @@
 const memoryManager = require('./memory-manager');
 const aiProcessor = require('./ai-processor');
+const adminController = require('./admin-controller');
 const evolution = require('../integrations/evolution');
 const elevenlabs = require('../integrations/elevenlabs');
 const openai = require('../integrations/openai');
@@ -60,10 +61,29 @@ async function handleMessage({ whatsappId, text, isGroup, instance, remoteJid, p
 
     // Step 9: Send response via Evolution API
     await evolution.setTyping(instance, remoteJid, false);
-    await evolution.sendMessage(instance, remoteJid, response);
+
+    // Check if admin wants audio responses
+    if (adminController.shouldRespondWithAudio(false)) {
+      try {
+        logger.info('[TTS] Admin mode: generating audio response...');
+        const audioResponse = await elevenlabs.textToSpeech(response);
+        if (audioResponse) {
+          const audioBase64Response = audioResponse.toString('base64');
+          await evolution.sendAudio(instance, remoteJid, audioBase64Response);
+          logger.info('[OK] Audio response sent (admin mode)');
+        } else {
+          await evolution.sendMessage(instance, remoteJid, response);
+        }
+      } catch (ttsError) {
+        logger.warn('[TTS] Audio failed, sending text:', ttsError.message);
+        await evolution.sendMessage(instance, remoteJid, response);
+      }
+    } else {
+      await evolution.sendMessage(instance, remoteJid, response);
+    }
 
     const duration = Date.now() - startTime;
-    logger.info(`[OK] Text response sent to ${whatsappId} in ${duration}ms`);
+    logger.info(`[OK] Response sent to ${whatsappId} in ${duration}ms`);
 
     // Step 10: Background tasks (non-blocking)
     processBackgroundTasks(memory.id, whatsappId, history, facts, text, response, pushName).catch(err => {

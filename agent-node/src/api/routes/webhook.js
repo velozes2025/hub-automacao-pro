@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const { handleMessage, handleAudioMessage, handleAdminMessage } = require('../../services/message-handler');
 const lidResolver = require('../../services/lid-resolver');
+const adminController = require('../../services/admin-controller');
+const evolution = require('../../integrations/evolution');
 const logger = require('../../utils/logger');
 const config = require('../../config');
 
@@ -12,8 +14,11 @@ router.post('/', async (req, res) => {
     // Evolution API v2 sends instance name in different fields
     const instanceName = instance || sender || req.body.instanceName || 'teste-instance';
 
+    // Normalize event name (Evolution sends UPPERCASE, we use lowercase)
+    const eventLower = (event || '').toLowerCase();
+
     // Handle different event types
-    if (event === 'contacts.upsert' || event === 'contacts.update') {
+    if (eventLower === 'contacts.upsert' || eventLower === 'contacts.update' || eventLower === 'contacts_upsert' || eventLower === 'contacts_update') {
       // Learn LID mappings from contact events
       const contacts = Array.isArray(data) ? data : [data];
       for (const contact of contacts) {
@@ -22,8 +27,8 @@ router.post('/', async (req, res) => {
       return res.json({ status: 'contacts processed' });
     }
 
-    // Only process incoming messages
-    if (event !== 'messages.upsert') {
+    // Only process incoming messages (handle both formats: messages.upsert and MESSAGES_UPSERT)
+    if (eventLower !== 'messages.upsert' && eventLower !== 'messages_upsert') {
       return res.json({ status: 'ignored', reason: 'not a message event' });
     }
 
@@ -35,34 +40,37 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'Missing remoteJid' });
     }
 
-    // Check for admin commands (fromMe messages)
-    if (key.fromMe && config.adminNumber) {
-      const msgContent = messageData?.message || messageData;
-      const text = msgContent?.conversation || msgContent?.extendedTextMessage?.text || '';
+    // CRITICAL: Skip ALL messages sent by us (fromMe = true)
+    // This prevents backend messages from being processed or echoed to clients
+    if (key.fromMe) {
       const remotePhone = key.remoteJid.split('@')[0];
 
-      // Admin slash commands or natural language in self-chat
-      if (text && (text.startsWith('/') || remotePhone === config.adminNumber)) {
-        logger.info(`[ADMIN] Command from admin: ${text.substring(0, 50)}...`);
+      // ONLY process admin commands if:
+      // 1. Admin is talking to HIMSELF (self-chat for commands)
+      // 2. Message starts with / (explicit command)
+      const isSelfChat = remotePhone === config.adminNumber;
+      const msgContent = messageData?.message || messageData;
+      const text = msgContent?.conversation || msgContent?.extendedTextMessage?.text || '';
+      const isSlashCommand = text && text.startsWith('/');
+
+      if (config.adminNumber && isSelfChat && (isSlashCommand || text)) {
+        logger.info(`[ADMIN] Self-chat command: ${text.substring(0, 50)}...`);
         res.json({ status: 'processing admin' });
 
         handleAdminMessage({
           text,
           instance: instanceName,
           remoteJid: key.remoteJid,
-          isCommand: text.startsWith('/'),
+          isCommand: isSlashCommand,
         }).catch(err => {
           logger.error(`[FAIL] Admin command: ${err.message}`);
         });
         return;
       }
 
-      return res.json({ status: 'ignored', reason: 'own message' });
-    }
-
-    // Skip other self messages
-    if (key.fromMe) {
-      return res.json({ status: 'ignored', reason: 'own message' });
+      // Ignore ALL other outgoing messages - NEVER process or echo
+      logger.debug(`[SKIP] Outgoing message to ${remotePhone} - not processing`);
+      return res.json({ status: 'ignored', reason: 'outgoing message' });
     }
 
     // Extract WhatsApp ID
@@ -137,6 +145,26 @@ router.post('/', async (req, res) => {
     }
 
     logger.info(`[MSG] From: ${whatsappId} (${pushName}): ${text.substring(0, 50)}...`);
+
+    // Check if sender is admin and if it's a command
+    if (adminController.isAdmin(whatsappId)) {
+      const parsed = adminController.parseCommand(text);
+      if (parsed) {
+        logger.info(`[ADMIN] Command detected: ${parsed.command}`);
+        const result = adminController.executeCommand(parsed.command, parsed.params);
+        if (result) {
+          res.json({ status: 'admin command processed' });
+          await evolution.sendMessage(instanceName, key.remoteJid, result);
+          return;
+        }
+      }
+    }
+
+    // Check if bot is paused (except for admin)
+    if (adminController.isBotPaused() && !adminController.isAdmin(whatsappId)) {
+      logger.info(`[PAUSED] Bot is paused, ignoring message from ${whatsappId}`);
+      return res.json({ status: 'ignored', reason: 'bot paused' });
+    }
 
     // Respond immediately, process asynchronously
     res.json({ status: 'processing' });
