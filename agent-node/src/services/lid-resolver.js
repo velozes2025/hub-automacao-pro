@@ -8,9 +8,17 @@ const { getDatabase } = require('../db/sqlite');
 const logger = require('../utils/logger');
 const axios = require('axios');
 const config = require('../config');
+const { Pool } = require('pg');
 
 // In-memory cache: lid_jid -> phone
 const cache = new Map();
+
+// PostgreSQL connection for fallback lookup
+const pgPool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 2,
+  idleTimeoutMillis: 30000,
+});
 
 class LIDResolver {
   constructor() {
@@ -70,6 +78,23 @@ class LIDResolver {
     } catch (e) {
       // Table might not exist, create it
       this.ensureTable();
+    }
+
+    // Try PostgreSQL as fallback (main database)
+    try {
+      const pgResult = await pgPool.query(
+        'SELECT phone, push_name FROM lid_mappings WHERE lid_jid = $1',
+        [lidJid]
+      );
+      if (pgResult.rows.length > 0) {
+        const { phone, push_name } = pgResult.rows[0];
+        // Sync to SQLite for faster future lookups
+        this.saveMapping(lidJid, phone, push_name, 'postgres_sync');
+        logger.info(`[OK] LID resolved from PostgreSQL: ${lidJid} -> ${phone}`);
+        return phone;
+      }
+    } catch (pgError) {
+      logger.debug('PostgreSQL LID lookup failed:', pgError.message);
     }
 
     // Try to resolve via contacts API
@@ -149,12 +174,13 @@ class LIDResolver {
   }
 
   /**
-   * Save LID -> phone mapping to database
+   * Save LID -> phone mapping to database (SQLite + PostgreSQL)
    */
   saveMapping(lidJid, phone, pushName, source) {
     const db = getDatabase();
     this.ensureTable();
 
+    // Save to SQLite (local cache)
     try {
       db.prepare(`
         INSERT OR REPLACE INTO lid_mappings (lid_jid, phone, push_name, source, updated_at)
@@ -164,7 +190,42 @@ class LIDResolver {
       cache.set(lidJid, phone);
       logger.info(`[OK] LID resolved via ${source}: ${lidJid} -> ${phone}`);
     } catch (error) {
-      logger.error('Failed to save LID mapping:', error.message);
+      logger.error('Failed to save LID mapping to SQLite:', error.message);
+    }
+
+    // Also save to PostgreSQL (main database) for persistence
+    if (source !== 'postgres_sync') {
+      this.saveMappingToPostgres(lidJid, phone, pushName, source).catch(e =>
+        logger.debug('PostgreSQL LID save failed:', e.message)
+      );
+    }
+  }
+
+  /**
+   * Save mapping to PostgreSQL
+   */
+  async saveMappingToPostgres(lidJid, phone, pushName, source) {
+    try {
+      // Get the default whatsapp_account_id
+      const waResult = await pgPool.query(
+        'SELECT id FROM whatsapp_accounts LIMIT 1'
+      );
+      if (waResult.rows.length === 0) return;
+
+      const waId = waResult.rows[0].id;
+
+      await pgPool.query(`
+        INSERT INTO lid_mappings (whatsapp_account_id, lid_jid, phone, push_name, resolved_via, created_at)
+        VALUES ($1, $2, $3, $4, $5, NOW())
+        ON CONFLICT (lid_jid, whatsapp_account_id) DO UPDATE SET
+          phone = EXCLUDED.phone,
+          push_name = EXCLUDED.push_name,
+          resolved_via = EXCLUDED.resolved_via
+      `, [waId, lidJid, phone, pushName || '', source]);
+
+      logger.debug(`[OK] LID saved to PostgreSQL: ${lidJid} -> ${phone}`);
+    } catch (error) {
+      throw error;
     }
   }
 
