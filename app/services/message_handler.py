@@ -590,9 +590,14 @@ def _process_incoming(instance_name, data):
         if base_speed == 1.0:
             voice_config['speed'] = _sentiment_speeds.get(sentiment, 1.0)
 
-    # Send response — mirror client format: audio→audio, text→text
+    # Send response — audio for: incoming audio OR new leads (first contact)
+    # New leads get audio greeting to create personal connection
     reply_type = 'text'
-    if source == 'audio' and voice_config and voice_config.get('enabled'):
+    should_send_audio = (
+        voice_config and voice_config.get('enabled') and
+        (source == 'audio' or is_new_lead)
+    )
+    if should_send_audio:
         sent = sender.send_audio_response(
             instance_name, send_phone, response_text,
             voice_config=voice_config,
@@ -603,7 +608,7 @@ def _process_incoming(instance_name, data):
             sentiment=sentiment,
             persona=persona,
         )
-        reply_type = 'audio'
+        reply_type = 'audio' if source == 'audio' else 'audio_new_lead'
         # Log TTS cost — provider-aware (ElevenLabs vs OpenAI)
         from app.channels.transcriber import (
             TTS_MODEL, TTS_COST_PER_1K_CHARS,
@@ -631,6 +636,8 @@ def _process_incoming(instance_name, data):
     else:
         if source == 'audio' and not voice_config:
             log.info(f'[{instance_name}] Audio input but no voice persona configured — replying as text')
+        elif is_new_lead and not voice_config:
+            log.info(f'[{instance_name}] New lead but no voice persona configured — replying as text')
         sent = sender.send_split_messages(
             instance_name, send_phone, response_text,
             tenant_id=tenant_id,
