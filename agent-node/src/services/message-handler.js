@@ -1,6 +1,7 @@
 const memoryManager = require('./memory-manager');
 const aiProcessor = require('./ai-processor');
 const adminController = require('./admin-controller');
+const lidResolver = require('./lid-resolver');
 const evolution = require('../integrations/evolution');
 const elevenlabs = require('../integrations/elevenlabs');
 const openai = require('../integrations/openai');
@@ -59,8 +60,14 @@ async function handleMessage({ whatsappId, text, isGroup, instance, remoteJid, p
     // Step 8: Save assistant response to history
     memoryManager.addToHistory(memory.id, 'assistant', response);
 
-    // Step 9: Send response via Evolution API
-    await evolution.setTyping(instance, remoteJid, false);
+    // Step 9: Resolve LID to real phone number (critical for new leads)
+    const destinationJid = await lidResolver.getDestinationJid(instance, remoteJid);
+    if (destinationJid !== remoteJid) {
+      logger.info(`[LID] Resolved: ${remoteJid} -> ${destinationJid}`);
+    }
+
+    // Step 10: Send response via Evolution API
+    await evolution.setTyping(instance, destinationJid, false);
 
     // Check if admin wants audio responses
     if (adminController.shouldRespondWithAudio(false)) {
@@ -69,17 +76,17 @@ async function handleMessage({ whatsappId, text, isGroup, instance, remoteJid, p
         const audioResponse = await elevenlabs.textToSpeech(response);
         if (audioResponse) {
           const audioBase64Response = audioResponse.toString('base64');
-          await evolution.sendAudio(instance, remoteJid, audioBase64Response);
+          await evolution.sendAudio(instance, destinationJid, audioBase64Response);
           logger.info('[OK] Audio response sent (admin mode)');
         } else {
-          await evolution.sendMessage(instance, remoteJid, response);
+          await evolution.sendMessage(instance, destinationJid, response);
         }
       } catch (ttsError) {
         logger.warn('[TTS] Audio failed, sending text:', ttsError.message);
-        await evolution.sendMessage(instance, remoteJid, response);
+        await evolution.sendMessage(instance, destinationJid, response);
       }
     } else {
-      await evolution.sendMessage(instance, remoteJid, response);
+      await evolution.sendMessage(instance, destinationJid, response);
     }
 
     const duration = Date.now() - startTime;
@@ -97,7 +104,8 @@ async function handleMessage({ whatsappId, text, isGroup, instance, remoteJid, p
     logger.error(`[FAIL] Message handling failed after ${duration}ms: ${error.message}`);
 
     try {
-      await evolution.setTyping(instance, remoteJid, false);
+      const destJid = await lidResolver.getDestinationJid(instance, remoteJid);
+      await evolution.setTyping(instance, destJid, false);
     } catch (e) {}
 
     throw error;
@@ -127,7 +135,8 @@ async function handleAudioMessage({ whatsappId, instance, remoteJid, pushName, a
 
     if (!audio) {
       logger.error('[FAIL] Could not get audio data');
-      await evolution.sendMessage(instance, remoteJid, 'Desculpe, não consegui processar seu áudio. Pode enviar novamente?');
+      const destJid = await lidResolver.getDestinationJid(instance, remoteJid);
+      await evolution.sendMessage(instance, destJid, 'Desculpe, não consegui processar seu áudio. Pode enviar novamente?');
       return { success: false, error: 'No audio data' };
     }
 
@@ -139,7 +148,8 @@ async function handleAudioMessage({ whatsappId, instance, remoteJid, pushName, a
       logger.info(`[OK] Transcribed: "${transcription.substring(0, 50)}..."`);
     } catch (transcribeError) {
       logger.error('[FAIL] Transcription failed:', transcribeError.message);
-      await evolution.sendMessage(instance, remoteJid, 'Não consegui entender o áudio. Pode digitar sua mensagem?');
+      const destJid = await lidResolver.getDestinationJid(instance, remoteJid);
+      await evolution.sendMessage(instance, destJid, 'Não consegui entender o áudio. Pode digitar sua mensagem?');
       return { success: false, error: 'Transcription failed' };
     }
 
@@ -169,8 +179,14 @@ async function handleAudioMessage({ whatsappId, instance, remoteJid, pushName, a
     // Save to history
     memoryManager.addToHistory(memory.id, 'assistant', response);
 
+    // Resolve LID to real phone number (critical for new leads)
+    const destinationJid = await lidResolver.getDestinationJid(instance, remoteJid);
+    if (destinationJid !== remoteJid) {
+      logger.info(`[LID] Resolved: ${remoteJid} -> ${destinationJid}`);
+    }
+
     // Stop typing
-    await evolution.setTyping(instance, remoteJid, false);
+    await evolution.setTyping(instance, destinationJid, false);
 
     // For audio messages, respond with audio ONLY (not text)
     try {
@@ -179,17 +195,17 @@ async function handleAudioMessage({ whatsappId, instance, remoteJid, pushName, a
 
       if (audioResponse) {
         const audioBase64Response = audioResponse.toString('base64');
-        await evolution.sendAudio(instance, remoteJid, audioBase64Response);
+        await evolution.sendAudio(instance, destinationJid, audioBase64Response);
         logger.info('[OK] Audio response sent');
       } else {
         // Fallback to text if audio generation fails completely
-        await evolution.sendMessage(instance, remoteJid, response);
+        await evolution.sendMessage(instance, destinationJid, response);
         logger.info('[OK] Fallback text response sent');
       }
     } catch (ttsError) {
       logger.warn('[TTS] Audio generation failed:', ttsError.message);
       // Fallback to text only if audio fails
-      await evolution.sendMessage(instance, remoteJid, response);
+      await evolution.sendMessage(instance, destinationJid, response);
       logger.info('[OK] Fallback text response sent');
     }
 
@@ -207,8 +223,9 @@ async function handleAudioMessage({ whatsappId, instance, remoteJid, pushName, a
     logger.error(`[FAIL] Audio handling failed: ${error.message}`);
 
     try {
-      await evolution.setTyping(instance, remoteJid, false);
-      await evolution.sendMessage(instance, remoteJid, 'Ocorreu um erro ao processar seu áudio. Tente novamente.');
+      const destJid = await lidResolver.getDestinationJid(instance, remoteJid);
+      await evolution.setTyping(instance, destJid, false);
+      await evolution.sendMessage(instance, destJid, 'Ocorreu um erro ao processar seu áudio. Tente novamente.');
     } catch (e) {}
 
     throw error;
@@ -311,6 +328,9 @@ async function handleAdminMessage({ text, instance, remoteJid, isCommand }) {
   try {
     logger.info(`[ADMIN] Processing: ${text.substring(0, 50)}...`);
 
+    // Resolve LID if needed
+    const destinationJid = await lidResolver.getDestinationJid(instance, remoteJid);
+
     // For now, process as natural language command via AI
     const systemPrompt = `Voce e o assistente pessoal do Thiago, dono do Hub Automacao Pro.
 Thiago esta te mandando mensagem pelo WhatsApp para controlar o bot.
@@ -330,7 +350,7 @@ Se for um comando, execute e confirme.`;
       systemPrompt
     );
 
-    await evolution.sendMessage(instance, remoteJid, response);
+    await evolution.sendMessage(instance, destinationJid, response);
     logger.info(`[ADMIN] Response sent`);
 
     return { success: true, response };
